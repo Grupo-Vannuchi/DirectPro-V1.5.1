@@ -57,6 +57,32 @@ export async function logEvent(accountId: string | null, type: string, payload: 
   ]);
 }
 
+// Registra no máximo um evento deste tipo por janela.
+//
+// Para diagnósticos que nascem de requisição NÃO autenticada. O webhook aceita
+// qualquer coisa da internet, e gravar uma linha por tentativa transforma o
+// diagnóstico num canal de escrita aberto: quem quiser enche a tabela e a cota
+// do banco. Um aviso a cada 10 minutos diz a mesma coisa ao dono do painel.
+//
+// A corrida entre duas requisições simultâneas pode gravar duas linhas em vez
+// de uma. Tudo bem: o que não pode é gravar dez mil.
+export async function logEventThrottled(
+  accountId: string | null,
+  type: string,
+  payload: unknown,
+  minutos = 10
+): Promise<void> {
+  await ensureSchema();
+  const recentes = (await sql().query(
+    `select 1 from events
+     where type = $1 and created_at > now() - make_interval(mins => $2::int)
+     limit 1`,
+    [type, minutos]
+  )) as unknown[];
+  if (recentes.length) return;
+  await logEvent(accountId, type, payload);
+}
+
 // A Meta manda o id da conta que recebeu o evento em entry.id — é ele que diz
 // qual das contas conectadas deve responder. Se não bater (id em formato
 // inesperado) e só existir uma conta, ela assume.

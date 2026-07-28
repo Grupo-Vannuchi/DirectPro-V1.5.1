@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { createHmac } from "node:crypto";
-import { handleCommentEvent, handleMessagingEvent, drainQueue, logEvent } from "@/lib/engine";
+import {
+  handleCommentEvent,
+  handleMessagingEvent,
+  drainQueue,
+  logEvent,
+  logEventThrottled,
+} from "@/lib/engine";
 import { getConfig } from "@/lib/db";
 import { safeEqualHex, safeEqualSecret } from "@/lib/crypto";
 
@@ -70,7 +76,7 @@ export async function GET(req: NextRequest) {
 
   // best-effort: deixa rastro para o usuário ver em /eventos
   try {
-    await logEvent(null, "webhook_verify_failed", { motivo });
+    await logEventThrottled(null, "webhook_verify_failed", { motivo });
   } catch {
     // banco fora do ar: o motivo ainda vai no corpo da resposta
   }
@@ -117,7 +123,7 @@ export async function POST(req: NextRequest) {
   ].filter((s): s is string => Boolean(s));
 
   if (!chaves.length) {
-    await logEvent(null, "signature_skipped", {
+    await logEventThrottled(null, "signature_skipped", {
       motivo: "nenhuma chave secreta configurada — salve as credenciais no /setup",
     });
     return new NextResponse("sem chave secreta configurada", { status: 401 });
@@ -125,8 +131,9 @@ export async function POST(req: NextRequest) {
 
   if (!chaves.some((s) => assinaturaConfere(rawBody, assinatura, s))) {
     // NUNCA silencioso: sem este registro, o usuário vê "não chega nada" e não
-    // tem como descobrir que o problema é a chave secreta errada.
-    await logEvent(null, "signature_mismatch", {
+    // tem como descobrir que o problema é a chave secreta errada. Limitado por
+    // janela porque este caminho aceita requisição de qualquer origem.
+    await logEventThrottled(null, "signature_mismatch", {
       motivo:
         "a assinatura não confere com nenhuma chave salva — confira a Chave Secreta do app no /setup",
       tem_header: Boolean(assinatura),
