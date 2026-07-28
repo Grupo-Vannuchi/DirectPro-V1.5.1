@@ -17,8 +17,6 @@ import {
   sectionTitle,
   badgeAccent,
   badgeNeutral,
-  subtle,
-  eyebrow,
 } from "../ui";
 import {
   IconComment,

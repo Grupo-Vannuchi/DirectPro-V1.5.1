@@ -12,6 +12,33 @@ import { useFormStatus } from "react-dom";
 // As mensagens em `etapas` trocam a cada 2,5s. Elas descrevem o que a ação
 // realmente faz (não é barra de progresso falsa) e servem para a espera não
 // parecer travamento.
+
+// Componente próprio para o contador nascer e morrer junto com a espera.
+//
+// Antes, o índice era zerado dentro do próprio efeito quando a ação terminava,
+// o que dispara renderização em cascata — é exatamente o que a regra
+// react-hooks/set-state-in-effect existe para impedir. Desmontando, o estado
+// some sozinho: a próxima espera começa da primeira mensagem sem ninguém
+// precisar zerar nada.
+function EtapasRotativas({ etapas }: { etapas: string[] }) {
+  const [i, setI] = useState(0);
+
+  useEffect(() => {
+    const total = etapas.length;
+    if (total <= 1) return;
+    const t = setInterval(() => {
+      // para na última mensagem em vez de ficar em loop, que pareceria bug
+      setI((v) => (v + 1 < total ? v + 1 : v));
+    }, 2500);
+    return () => clearInterval(t);
+    // depende da QUANTIDADE, não do array: quem chama monta a lista na
+    // renderização, e depender da identidade dela recriaria o intervalo a cada
+    // passagem, reiniciando a contagem sem parar
+  }, [etapas.length]);
+
+  return <>{etapas[i]}</>;
+}
+
 export default function SubmitButton({
   children,
   pendingLabel = "Processando…",
@@ -24,21 +51,6 @@ export default function SubmitButton({
   className?: string;
 }) {
   const { pending } = useFormStatus();
-  const [i, setI] = useState(0);
-
-  useEffect(() => {
-    if (!pending || !etapas?.length) {
-      setI(0);
-      return;
-    }
-    const t = setInterval(() => {
-      // para na última mensagem em vez de ficar em loop, que pareceria bug
-      setI((v) => (v + 1 < etapas.length ? v + 1 : v));
-    }, 2500);
-    return () => clearInterval(t);
-  }, [pending, etapas]);
-
-  const rotulo = pending ? (etapas?.length ? etapas[i] : pendingLabel) : null;
 
   return (
     <span className="inline-flex flex-col gap-1.5">
@@ -66,7 +78,8 @@ export default function SubmitButton({
             />
           </svg>
         )}
-        {pending ? rotulo : children}
+        {!pending && children}
+        {pending && (etapas?.length ? <EtapasRotativas etapas={etapas} /> : pendingLabel)}
       </button>
 
       {/* aviso de paciência: só aparece quando já está esperando */}
