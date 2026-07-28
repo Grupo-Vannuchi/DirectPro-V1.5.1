@@ -27,7 +27,10 @@ import { renderVariables, type VariableContext } from "./variables";
 // Recepção: transforma eventos do webhook em itens na fila
 // ============================================================
 
-type CommentValue = {
+// Exportados porque o webhook precisa nomear o que está entregando. Todos os
+// campos são opcionais de propósito: é JSON vindo da Meta, e a única garantia é
+// a assinatura do corpo — não o formato dele.
+export type CommentValue = {
   id: string; // comment_id
   from?: { id?: string; username?: string };
   media?: { id?: string; media_product_type?: string };
@@ -35,7 +38,7 @@ type CommentValue = {
   parent_id?: string;
 };
 
-type MessagingEvent = {
+export type MessagingEvent = {
   sender?: { id?: string };
   recipient?: { id?: string };
   timestamp?: number;

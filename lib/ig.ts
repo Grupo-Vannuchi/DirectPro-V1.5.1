@@ -93,16 +93,38 @@ export async function refreshLongLivedToken(
 
 // ---------- Perfil / mídia ----------
 
-export async function getProfile(token: string): Promise<{
+// A resposta da Meta é JSON solto: nada garante que os campos vieram, nem que
+// vieram como texto. Ler `json.username` direto e confiar é o que transforma
+// mudança de contrato da Meta em `undefined` silencioso lá na frente, longe
+// daqui. Estas duas funções são a fronteira onde isso para.
+function texto(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v : undefined;
+}
+
+export type IgProfile = {
   user_id: string;
   username: string;
   name?: string;
   profile_picture_url?: string;
-}> {
+};
+
+export async function getProfile(token: string): Promise<IgProfile> {
   const json = await graphFetch(
     `/me?fields=user_id,username,name,profile_picture_url&access_token=${encodeURIComponent(token)}`
   );
-  return json as never;
+  const user_id = texto(json.user_id);
+  const username = texto(json.username);
+  // Sem id não dá para conectar a conta, e falhar aqui, com a resposta em mãos,
+  // é muito mais fácil de diagnosticar do que um id vazio salvo no banco.
+  if (!user_id || !username) {
+    throw new IgError(502, `perfil sem user_id ou username: ${JSON.stringify(json).slice(0, 200)}`);
+  }
+  return {
+    user_id,
+    username,
+    name: texto(json.name),
+    profile_picture_url: texto(json.profile_picture_url),
+  };
 }
 
 export async function subscribeToWebhooks(igUserId: string, token: string): Promise<Json> {
@@ -190,7 +212,13 @@ export async function getUserProfile(
   const json = await graphFetch(
     `/${igsid}?fields=username,name,profile_pic&access_token=${encodeURIComponent(token)}`
   );
-  return json as never;
+  // Aqui nada é obrigatório: conta privada ou apagada devolve resposta magra, e
+  // quem chama já trata isso guardando só o que veio.
+  return {
+    username: texto(json.username),
+    name: texto(json.name),
+    profile_pic: texto(json.profile_pic),
+  };
 }
 
 // A Meta informa se a pessoa segue a conta conectada. Fica numa chamada

@@ -7,6 +7,8 @@ import {
   drainQueue,
   logEvent,
   logEventThrottled,
+  type CommentValue,
+  type MessagingEvent,
 } from "@/lib/engine";
 import { getConfig } from "@/lib/db";
 import { safeEqualHex, safeEqualSecret } from "@/lib/crypto";
@@ -146,8 +148,8 @@ export async function POST(req: NextRequest) {
     object?: string;
     entry?: {
       id?: string;
-      changes?: { field?: string; value?: Record<string, unknown> }[];
-      messaging?: Record<string, unknown>[];
+      changes?: { field?: string; value?: CommentValue }[];
+      messaging?: MessagingEvent[];
     }[];
   };
   try {
@@ -161,11 +163,11 @@ export async function POST(req: NextRequest) {
       // entry.id diz QUAL conta conectada recebeu o evento (multi-conta)
       for (const change of entry.changes ?? []) {
         if (change.field === "comments" && change.value) {
-          await handleCommentEvent(entry.id, change.value as never);
+          await handleCommentEvent(entry.id, change.value);
         }
       }
       for (const messaging of entry.messaging ?? []) {
-        await handleMessagingEvent(entry.id, messaging as never);
+        await handleMessagingEvent(entry.id, messaging);
       }
     }
   } catch (err) {
