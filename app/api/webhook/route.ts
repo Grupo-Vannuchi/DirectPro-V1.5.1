@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { handleCommentEvent, handleMessagingEvent, drainQueue, logEvent } from "@/lib/engine";
 import { getConfig } from "@/lib/db";
+import { safeEqualHex, safeEqualSecret } from "@/lib/crypto";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
-
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-}
 
 // ============================================================
 // GET — handshake de verificação da Meta
@@ -52,8 +47,8 @@ export async function GET(req: NextRequest) {
   const bate =
     Boolean(received) &&
     Boolean(
-      (esperado && safeEqual(received, esperado)) ||
-        (doAmbiente && safeEqual(received, doAmbiente))
+      (esperado && safeEqualSecret(received, esperado)) ||
+        (doAmbiente && safeEqualSecret(received, doAmbiente))
     );
 
   if (bate) {
@@ -89,10 +84,7 @@ export async function GET(req: NextRequest) {
 function assinaturaConfere(rawBody: string, header: string | null, secret: string): boolean {
   if (!secret || !header?.startsWith("sha256=")) return false;
   const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  const received = header.slice(7);
-  const a = Buffer.from(expected, "hex");
-  const b = Buffer.from(received, "hex");
-  return a.length === b.length && timingSafeEqual(a, b);
+  return safeEqualHex(expected, header.slice(7));
 }
 
 // ============================================================

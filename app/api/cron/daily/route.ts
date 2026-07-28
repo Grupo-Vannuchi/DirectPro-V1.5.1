@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { drainQueue } from "@/lib/engine";
 import { refreshLongLivedToken, getUserProfile } from "@/lib/ig";
 import { listAccounts, updateAccountToken, sql } from "@/lib/db";
+import { safeEqualSecret } from "@/lib/crypto";
 
 export const maxDuration = 60;
 
@@ -13,7 +14,7 @@ export const maxDuration = 60;
 export async function GET(req: NextRequest) {
   // se CRON_SECRET existir, a Vercel manda "Authorization: Bearer <segredo>"
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (secret && !safeEqualSecret(req.headers.get("authorization") ?? "", `Bearer ${secret}`)) {
     return new NextResponse("unauthorized", { status: 401 });
   }
 
