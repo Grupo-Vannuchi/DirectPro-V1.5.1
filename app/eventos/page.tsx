@@ -13,7 +13,11 @@ import {
 } from "../labels";
 import Avatar from "../avatar";
 import PostLine from "./post-line";
+import Realce from "./realce";
+import Filtros, { type OpcaoPost } from "./filtros";
 import { resolvePosts, type PostRef } from "@/lib/media-lookup";
+import { LIMITE_EVENTOS, parseFilters, temFiltro } from "@/lib/event-filters";
+import { EVENTS_FROM, buildWhere, postsComEventos } from "@/lib/event-query";
 
 export const dynamic = "force-dynamic";
 
@@ -32,50 +36,79 @@ type QueueRow = QueueItem & {
   person_pic: string | null;
 };
 
-export default async function EventosPage() {
+// Quantos posts o seletor oferece. Mais que isso vira parede de miniaturas e
+// estoura o teto de buscas avulsas do resolvePosts().
+const POSTS_NO_SELETOR = 12;
+
+export default async function EventosPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   await ensureSchema();
   const account = await getSelectedAccount();
+  const filtros = parseFilters(await searchParams);
+  const where = account ? buildWhere(account.ig_user_id, filtros) : null;
+  const opcoes = account ? postsComEventos(account.ig_user_id, POSTS_NO_SELETOR) : null;
 
-  // Junta com contatos para mostrar QUEM é a pessoa, não o número dela
-  const [eventRows, queueRows] = account
-    ? await Promise.all([
-        sql().query(
-          `select e.*,
-                  coalesce(cf.username, cs.username) as person_username,
-                  coalesce(cf.profile_pic, cs.profile_pic) as person_pic
-           from events e
-           left join contacts cf
-             on cf.account_id = e.account_id and cf.ig_id = e.payload->'from'->>'id'
-           left join contacts cs
-             on cs.account_id = e.account_id and cs.ig_id = e.payload->'sender'->>'id'
-           where e.account_id = $1 or e.account_id is null
-           order by e.created_at desc limit 50`,
-          [account.ig_user_id]
-        ),
-        sql().query(
-          `select q.*, c.username as person_username, c.name as person_name,
-                  c.profile_pic as person_pic
-           from queue q
-           left join contacts c
-             on c.account_id = q.account_id and c.ig_id = q.contact_ig_id
-           where q.account_id = $1
-           order by q.created_at desc limit 50`,
-          [account.ig_user_id]
-        ),
-      ])
-    : [[], []];
+  // Junta com contatos para mostrar QUEM é a pessoa, não o número dela.
+  // As quatro consultas são independentes — em paralelo para não empilhar
+  // latência de rede uma atrás da outra.
+  const [eventRows, queueRows, totalRows, postRows] =
+    account && where && opcoes
+      ? await Promise.all([
+          sql().query(
+            `select e.*,
+                    coalesce(cf.username, cs.username) as person_username,
+                    coalesce(cf.profile_pic, cs.profile_pic) as person_pic
+             ${EVENTS_FROM}
+             where ${where.sql}
+             order by e.created_at desc limit ${LIMITE_EVENTOS}`,
+            where.params
+          ),
+          sql().query(
+            `select q.*, c.username as person_username, c.name as person_name,
+                    c.profile_pic as person_pic
+             from queue q
+             left join contacts c
+               on c.account_id = q.account_id and c.ig_id = q.contact_ig_id
+             where q.account_id = $1
+             order by q.created_at desc limit 50`,
+            [account.ig_user_id]
+          ),
+          // Mesmo where da listagem: o número na tela nunca discorda da lista.
+          sql().query(`select count(*)::int as total ${EVENTS_FROM} where ${where.sql}`, where.params),
+          sql().query(opcoes.sql, opcoes.params),
+        ])
+      : [[], [], [], []];
+
   const events = eventRows as EventRow[];
   const queue = queueRows as QueueRow[];
+  const total = (totalRows as { total: number }[])[0]?.total ?? 0;
+  const contagens = postRows as { id: string; total: number }[];
 
-  // De qual post veio cada comentário. Os ids repetem muito (vários comentários
-  // no mesmo post), então resolvemos os distintos de uma vez.
+  // De qual post veio cada comentário, e as capas do seletor. Os ids repetem
+  // muito (vários comentários no mesmo post), então juntamos os dois conjuntos
+  // e resolvemos os distintos numa chamada só.
   const mediaIds = [
-    ...new Set(events.map((e) => eventMedia(e.payload)?.id).filter((id) => Boolean(id))),
+    ...new Set([
+      ...contagens.map((p) => p.id),
+      ...events.map((e) => eventMedia(e.payload)?.id).filter((id) => Boolean(id)),
+    ]),
   ] as string[];
   const posts: Map<string, PostRef> =
     account && mediaIds.length
       ? await resolvePosts(account.ig_user_id, account.access_token, mediaIds)
       : new Map();
+
+  const opcoesPost: OpcaoPost[] = contagens.map((p) => ({
+    id: p.id,
+    total: p.total,
+    thumb: posts.get(p.id)?.thumb ?? null,
+    caption: posts.get(p.id)?.caption ?? null,
+  }));
+
+  const filtrando = temFiltro(filtros);
 
   return (
     <div className="space-y-10">
@@ -150,12 +183,35 @@ export default async function EventosPage() {
           <p className={`mt-1 text-sm ${muted}`}>
             Cada comentário, story respondido e mensagem que chegou até você.
           </p>
+          {account && <Filtros filtros={filtros} posts={opcoesPost} />}
+          {account && (
+            <p className={`mt-3 text-xs ${muted}`}>
+              <b className="font-semibold">{total}</b>{" "}
+              {total === 1 ? "interação" : "interações"}
+              {filtrando && " neste recorte"}
+              {total > LIMITE_EVENTOS && ` · mostrando as ${LIMITE_EVENTOS} mais recentes`}
+            </p>
+          )}
         </div>
 
         {!events.length ? (
-          <p className={`p-6 text-sm ${card} ${muted}`}>
-            Nada por aqui ainda. Quando alguém interagir com seus posts, aparece nesta lista.
-          </p>
+          <div className={`flex flex-col items-center gap-3 p-8 text-center text-sm ${card} ${muted}`}>
+            {!account ? (
+              <p>Conecte uma conta do Instagram primeiro.</p>
+            ) : filtrando ? (
+              <>
+                <p>Nenhuma interação com esses filtros.</p>
+                <a
+                  href="/eventos"
+                  className="font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+                >
+                  Limpar filtros
+                </a>
+              </>
+            ) : (
+              <p>Nada por aqui ainda. Quando alguém interagir com seus posts, aparece nesta lista.</p>
+            )}
+          </div>
         ) : (
           <ul className="space-y-2">
             {events.map((e) => {
@@ -183,7 +239,7 @@ export default async function EventosPage() {
 
                   {texto && (
                     <p className="mt-2 border-l-2 border-zinc-200 pl-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
-                      “{texto}”
+                      “<Realce texto={texto} termo={filtros.q} />”
                     </p>
                   )}
 
