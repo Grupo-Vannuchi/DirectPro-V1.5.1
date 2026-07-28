@@ -124,12 +124,19 @@ qualidade; não vale gastá-la para validar quatro respostas.
 multi-conta, portanto pertencem à conta conectada primeiro. Atribuição
 determinística por `connected_at`, em vez de apagar ou chutar.
 
-**Loja (T1, T2).** Aponta para a N8X. O catálogo de reserva embutido é
-**removido** e a URL padrão deixa de existir: sem `LOJA_CATALOGO_URL`
-configurada, a loja não aparece. Isso interrompe o encaminhamento de vendas
-hoje, sem depender de a N8X já ter hospedado o próprio catálogo. Enquanto a
-reserva existir, derrubar o domínio de terceiro não basta — o checkout dele
-continua embutido no código.
+**Loja (T1, T2).** A N8X ainda não tem catálogo próprio, então **o link sai do
+menu** e a rota `/loja` continua de pé, intocada. Reversível em uma linha.
+
+Descartada a alternativa de remover o catálogo de reserva e a URL padrão agora:
+é mais mudança de código para o mesmo efeito prático, e desmontaria uma página
+que vai voltar a ser usada assim que houver catálogo da N8X.
+
+O argumento decisivo não foi o dinheiro do checkout, foi o **controle remoto**:
+o catálogo é buscado de hora em hora num domínio de terceiro e renderizado
+dentro de um painel que agora leva a marca da N8X. Quem controla aquele arquivo
+troca produto, preço e link a qualquer momento, sem aviso.
+
+O contato de suporte da página passa a ser `@n8xmarketing`.
 
 ---
 
@@ -138,11 +145,11 @@ continua embutido no código.
 Cada fase é commitável e verificável sozinha. Nenhuma depende da seguinte estar
 pronta. A ordem não é estética: cada fase torna a próxima segura.
 
-### Fase 0 — Base limpa ✅
+### Fase 0 — Base limpa ✅ concluída
 
 - [x] Commitar os filtros de `/eventos` (`093fa65`)
 - [x] Crédito para a N8X Marketing (`a94d6c1`)
-- [ ] Loja: remover reserva embutida e URL padrão; contato da N8X
+- [x] Loja fora do menu; suporte para `@n8xmarketing` (`9933f1b`)
 
 ### Fase 1 — Segurança e correção
 
@@ -206,12 +213,14 @@ listada nas decisões acima.
 
 ## Pendências com a N8X
 
-Necessários para fechar a Fase 0:
+Nada bloqueia as fases seguintes. Quando a N8X quiser a Loja de volta ao menu,
+serão necessários:
 
-1. URL do `loja.json` hospedado (molde em `loja.example.json`)
+1. URL do `loja.json` hospedado, para `LOJA_CATALOGO_URL` (molde em
+   `loja.example.json`)
 2. Links de checkout dos produtos
-3. Canal de suporte que substitui `@oricardotenorio_`
+3. Substituir o catálogo de reserva de `lib/loja.ts`, que ainda contém o
+   checkout do autor anterior — enquanto ele estiver ali, derrubar o domínio de
+   terceiro não basta
 
-A Fase 0 fica aberta sem eles, mas o encaminhamento de vendas para terceiro é
-interrompido de imediato — a loja apenas não exibe produtos até a configuração
-chegar.
+Até lá o link fica fora do menu e a página não é alcançada pela navegação.
