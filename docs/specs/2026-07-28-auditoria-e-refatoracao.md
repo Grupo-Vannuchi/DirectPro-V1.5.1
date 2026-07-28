@@ -151,15 +151,25 @@ pronta. A ordem não é estética: cada fase torna a próxima segura.
 - [x] Crédito para a N8X Marketing (`a94d6c1`)
 - [x] Loja fora do menu; suporte para `@n8xmarketing` (`9933f1b`)
 
-### Fase 1 — Segurança e correção
+### Fase 1 — Segurança e correção ✅ concluída
 
-Zero feature nova. Um commit por correção.
+Zero feature nova.
 
-S1 freio no login e separação do raio de alcance da senha · S2 comparar HMAC em
-vez de string crua · S3 cookie com prazo · S4 no máximo um evento de assinatura
-inválida a cada 10 minutos · S5 exigir `CRON_SECRET` no `/tick` sem QStash ·
-C1 atribuição determinística das órfãs · C2 remover os `as never` · C3 corrigir
-o lint · C4 unificar `safeEqual`.
+| Commit | O quê |
+|---|---|
+| `5a7578a` | C4 · `lib/crypto.ts` unifica a comparação de segredos; cron deixa de usar `!==` |
+| `f2905ba` | S1 · freio de força bruta por IP · S2 · comparação por digest · S3 · cookie com prazo, chave derivada por scrypt |
+| `0f85f5e` | S4 · avisos de requisição não autenticada limitados a um por 10 min |
+| `e23e3d1` | S5 · `/tick` exige `CRON_SECRET` quando não há QStash |
+| `4a2d728` | C1 · órfãos atribuídos à conta conectada primeiro |
+| `bf03639` | C2 · quatro `as never` eliminados |
+| `07a4deb` | C3 · lint verde, sem erro e sem aviso |
+
+**Efeito visível:** as sessões abertas caem uma vez, porque o formato do cookie
+mudou. Nada além disso muda para quem usa o painel.
+
+**Novidade de infraestrutura:** tabela `login_attempts`, criada pelo
+`ensureSchema` como todas as outras.
 
 ### Fase 2 — Testes
 
