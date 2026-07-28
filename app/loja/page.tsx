@@ -144,12 +144,12 @@ export default async function LojaPage() {
       <p className={`text-xs ${muted}`}>
         Sentiu falta de alguma ferramenta? Me chame no{" "}
         <a
-          href="https://instagram.com/oricardotenorio_"
+          href="https://instagram.com/n8xmarketing"
           target="_blank"
           rel="noreferrer noopener"
           className="font-medium text-indigo-600 underline underline-offset-2 dark:text-indigo-400"
         >
-          @oricardotenorio_
+          @n8xmarketing
         </a>{" "}
         — o que mais pedirem, eu trago para a loja.
       </p>
