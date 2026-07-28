@@ -109,6 +109,7 @@ type EventPayload = {
   text?: string;
   from?: { id?: string; username?: string };
   sender?: { id?: string };
+  media?: { id?: string; media_product_type?: string };
   message?: { text?: string; quick_reply?: { payload?: string } };
 };
 
@@ -125,4 +126,22 @@ export function eventText(payload: unknown, type: string): string | null {
 export function eventUsername(payload: unknown): string | null {
   const p = (payload ?? {}) as EventPayload;
   return p.from?.username ?? null;
+}
+
+// ---------- De onde veio ----------
+
+// O tipo da publicação vem no próprio evento, então não custa chamada de API.
+function mediaKind(tipo?: string): string {
+  if (tipo === "REELS") return "no reels";
+  if (tipo === "AD") return "no anúncio";
+  if (tipo === "STORY") return "no story";
+  return "no post";
+}
+
+// Publicação onde o comentário aconteceu. Só comentários trazem: DM e resposta
+// de story não nascem de um post.
+export function eventMedia(payload: unknown): { id: string; kind: string } | null {
+  const m = ((payload ?? {}) as EventPayload).media;
+  if (!m?.id) return null;
+  return { id: m.id, kind: mediaKind(m.media_product_type) };
 }

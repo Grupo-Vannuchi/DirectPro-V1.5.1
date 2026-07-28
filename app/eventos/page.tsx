@@ -2,8 +2,18 @@ import { sql, ensureSchema, QueueItem } from "@/lib/db";
 import { getSelectedAccount } from "@/lib/account";
 import { fmtDate } from "@/lib/format";
 import { card, muted, tableWrap, thead, rowDivide } from "../ui";
-import { eventBadge, kindLabel, statusBadge, friendlyError, eventText, eventUsername } from "../labels";
+import {
+  eventBadge,
+  kindLabel,
+  statusBadge,
+  friendlyError,
+  eventText,
+  eventUsername,
+  eventMedia,
+} from "../labels";
 import Avatar from "../avatar";
+import PostLine from "./post-line";
+import { resolvePosts, type PostRef } from "@/lib/media-lookup";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +66,16 @@ export default async function EventosPage() {
     : [[], []];
   const events = eventRows as EventRow[];
   const queue = queueRows as QueueRow[];
+
+  // De qual post veio cada comentário. Os ids repetem muito (vários comentários
+  // no mesmo post), então resolvemos os distintos de uma vez.
+  const mediaIds = [
+    ...new Set(events.map((e) => eventMedia(e.payload)?.id).filter((id) => Boolean(id))),
+  ] as string[];
+  const posts: Map<string, PostRef> =
+    account && mediaIds.length
+      ? await resolvePosts(account.ig_user_id, account.access_token, mediaIds)
+      : new Map();
 
   return (
     <div className="space-y-10">
@@ -142,6 +162,7 @@ export default async function EventosPage() {
               const badge = eventBadge(e.type);
               const texto = eventText(e.payload, e.type);
               const quem = e.person_username ?? eventUsername(e.payload);
+              const media = eventMedia(e.payload);
               return (
                 <li key={e.id} className={`px-4 py-3 ${card}`}>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -165,6 +186,8 @@ export default async function EventosPage() {
                       “{texto}”
                     </p>
                   )}
+
+                  {media && <PostLine kind={media.kind} post={posts.get(media.id) ?? null} />}
 
                   <details className="mt-2">
                     <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">

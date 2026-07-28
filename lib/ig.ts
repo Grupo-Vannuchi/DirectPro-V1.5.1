@@ -165,6 +165,14 @@ export async function getMedia(igUserId: string, token: string, limit = 30): Pro
   return (json.data as Json[]) ?? [];
 }
 
+// Um post específico, pelo id. Serve para o comentário que veio de um post
+// antigo, fora da janela que getMedia() devolve.
+export async function getMediaById(mediaId: string, token: string): Promise<Json> {
+  return graphFetch(
+    `/${mediaId}?fields=id,media_type,media_url,thumbnail_url,caption,permalink&access_token=${encodeURIComponent(token)}`
+  );
+}
+
 // Stories ativos (últimas 24h) — vivem em outro edge, não em /media.
 export async function getStories(igUserId: string, token: string): Promise<Json[]> {
   const json = await graphFetch(
