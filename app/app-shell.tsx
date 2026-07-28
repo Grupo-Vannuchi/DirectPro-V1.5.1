@@ -153,12 +153,12 @@ function SidebarBody({
         {/* Crédito: prioridade visual baixa de propósito — texto pequeno, cor
             apagada e só ganha contraste no hover. */}
         <a
-          href="https://www.instagram.com/oricardotenorio/"
+          href="https://n8xmarketing.com.br"
           target="_blank"
           rel="noreferrer noopener"
           className="block px-3 pt-2 text-[10px] leading-relaxed text-zinc-400 transition-colors hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-400"
         >
-          Criado por Ricardo Tenório
+          Criado por N8X Marketing
         </a>
       </div>
     </div>
