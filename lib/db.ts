@@ -276,6 +276,12 @@ const DDL = [
   `create index if not exists automations_account_idx on automations(account_id)`,
   `create index if not exists queue_account_idx on queue(account_id, status)`,
   `create index if not exists events_account_idx on events(account_id, created_at desc)`,
+  // Freio de força bruta no login: uma linha por tentativa errada, por IP.
+  `create table if not exists login_attempts (
+    ip text not null,
+    attempted_at timestamptz not null default now()
+  )`,
+  `create index if not exists login_attempts_idx on login_attempts(ip, attempted_at desc)`,
   // Filtro "de qual post veio" em /eventos: sem este índice de expressão, cada
   // filtragem varre a tabela inteira.
   `create index if not exists events_media_idx on events ((payload->'media'->>'id'))`,
