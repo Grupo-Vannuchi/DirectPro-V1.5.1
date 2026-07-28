@@ -303,13 +303,23 @@ async function migrateAccounts(s: SqlClient): Promise<void> {
      on conflict (ig_user_id) do nothing`
   );
 
-  // 2) Enquanto houver exatamente UMA conta, os registros órfãos (account_id
-  //    nulo) são todos dela — atribui. Com 2+ contas o backfill já aconteceu.
-  const accs = (await s.query(`select ig_user_id from accounts`)) as { ig_user_id: string }[];
-  if (accs.length === 1) {
-    const target = accs[0].ig_user_id;
+  // 2) Registros órfãos (account_id nulo) são anteriores ao multi-conta,
+  //    portanto pertencem à conta conectada PRIMEIRO — não havia outra quando
+  //    foram criados. Atribuir por connected_at é determinístico e correto.
+  //
+  //    A versão anterior só fazia isso com exatamente uma conta. Com duas ou
+  //    mais, os órfãos ficavam para trás, o passo (3) nunca instalava a chave
+  //    primária composta e o `on conflict (account_id, ig_id)` do upsert de
+  //    contatos passava a estourar em tempo de execução.
+  const primeira = (await s.query(
+    `select ig_user_id from accounts
+     order by connected_at asc nulls last, created_at asc
+     limit 1`
+  )) as { ig_user_id: string }[];
+  if (primeira.length) {
+    const dona = primeira[0].ig_user_id;
     for (const t of ["automations", "queue", "events", "contacts"]) {
-      await s.query(`update ${t} set account_id = $1 where account_id is null`, [target]);
+      await s.query(`update ${t} set account_id = $1 where account_id is null`, [dona]);
     }
   }
 
