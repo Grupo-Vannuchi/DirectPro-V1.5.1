@@ -1,0 +1,4 @@
+@import "tailwindcss";
+
+/* Tema claro/escuro por classe: .dark no <html> (persistida em localStorage) */
+@custom-variant dark (&:where(.dark, .dark *));
