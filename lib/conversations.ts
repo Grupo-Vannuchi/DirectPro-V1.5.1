@@ -102,7 +102,14 @@ export async function conversationMessages(
          -- 'story_reaction' é reação sem texto: os dois têm contact_ig_id e
          -- entrariam na conversa privada como mensagem que nunca existiu.
          -- Nenhum dos dois recebe message_id, então ficariam com mid nulo e
-         -- jamais seriam deduplicados. KIND NOVO DE DM PRECISA ENTRAR AQUI.
+         -- jamais seriam deduplicados.
+         --
+         -- KIND NOVO DE DM PRECISA ENTRAR AQUI. A lista de kinds válidos é a
+         -- constraint queue_kind_check, em lib/db.ts. Esquecer de acrescentar
+         -- aqui faz a mensagem sumir da conversa em silêncio: sem erro, sem
+         -- log, sem teste vermelho. A lista é positiva de propósito — o defeito
+         -- que motivou este filtro nasceu justamente de deixar entrar por
+         -- omissão, e sumir é mais fácil de perceber do que poluir.
          and q.kind in (
            'private_reply','dm_welcome','dm_link','dm_reminder',
            'dm_follow_gate','dm_email_ask','dm_manual'
