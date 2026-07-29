@@ -123,6 +123,9 @@ export default async function Home({
          left join contacts cs
            on cs.account_id = e.account_id and cs.ig_id = e.payload->'sender'->>'id'
          where e.account_id = $1
+           -- resposta enviada pela própria conta: gravada para o histórico de
+           -- conversa, mas este cartão é sobre o que CHEGOU até o usuário
+           and e.type <> 'message_sent'
          order by e.created_at desc limit 8`,
         [account.ig_user_id]
       )) as { id: string; type: string; created_at: Date; person: string | null }[])

@@ -443,8 +443,19 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   const msg = ev.message;
   const senderId = ev.sender?.id;
   if (!msg || !senderId) return;
-  if (msg.is_echo) return; // mensagem enviada por nós mesmos
-  if (senderId === account.ig_user_id) return;
+
+  // Mensagem que a PRÓPRIA conta enviou — o "eco" da Meta. Acontece quando
+  // alguém responde pelo Instagram do celular, ou por outra ferramenta.
+  //
+  // A automação continua ignorando: reagir à própria mensagem viraria laço. Mas
+  // ela é gravada antes de sair daqui, porque é METADE da conversa. A API do
+  // Instagram devolve só as 20 mensagens mais recentes de cada conversa, então
+  // o que não for gravado na hora não é recuperável depois — não existe
+  // importar histórico.
+  if (msg.is_echo || senderId === account.ig_user_id) {
+    await logEvent(account.ig_user_id, "message_sent", ev);
+    return;
+  }
 
   const isStoryReply = Boolean(msg.reply_to?.story);
   const isQuickReply = Boolean(msg.quick_reply?.payload);

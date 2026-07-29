@@ -34,6 +34,12 @@ export function buildWhere(accountId: string, f: EventFilters): Where {
   const params: unknown[] = [accountId];
   const ref = () => `$${params.length}`;
 
+  // "message_sent" é a resposta que a própria conta enviou, gravada para o
+  // histórico de conversa. Fica de fora daqui porque esta lista se apresenta
+  // como "o que aconteceu no seu Instagram" — interações RECEBIDAS. Ela volta a
+  // aparecer quando existir a tela de conversa, que é onde faz sentido.
+  partes.push("e.type <> 'message_sent'");
+
   if (f.type) {
     params.push(f.type);
     partes.push(`e.type = ${ref()}`);

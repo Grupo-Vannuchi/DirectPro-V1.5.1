@@ -24,6 +24,13 @@ const EVENT: Record<string, Badge> = {
     label: "Tocou no botão",
     className: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-400",
   },
+  // Resposta enviada pela própria conta, fora do robô (pelo celular, por
+  // exemplo). Gravada para o histórico de conversa; hoje não aparece nas listas
+  // de "o que chegou até você", que são sobre interações RECEBIDAS.
+  message_sent: {
+    label: "Você respondeu",
+    className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-400",
+  },
   error: {
     label: "Algo deu errado",
     className: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-400",
