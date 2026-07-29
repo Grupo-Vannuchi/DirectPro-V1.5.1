@@ -26,3 +26,14 @@ export function pickRandom<T>(arr: T[]): T | undefined {
   if (!arr.length) return undefined;
   return arr[Math.floor(Math.random() * arr.length)];
 }
+
+// Acha o e-mail dentro de uma mensagem, que quase nunca vem só com o endereço:
+// chega como "meu email é ana@email.com" ou "ana@email.com obrigada!".
+//
+// Mora aqui, e não no motor, porque é leitura de texto do usuário — a mesma
+// família de match() — e porque assim dá para testar sem carregar banco e Meta
+// junto.
+export function extractEmail(text: string): string | null {
+  const m = text.match(/[\w.+-]+@[\w-]+\.[\w.-]{2,}/);
+  return m ? m[0].toLowerCase() : null;
+}

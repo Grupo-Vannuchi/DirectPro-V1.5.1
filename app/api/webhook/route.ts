@@ -3,13 +3,13 @@ import { after } from "next/server";
 import {
   handleCommentEvent,
   handleMessagingEvent,
-  drainQueue,
   logEvent,
   logEventThrottled,
   type CommentValue,
   type MessagingEvent,
 } from "@/lib/engine";
 import { getConfig } from "@/lib/db";
+import { drainQueue } from "@/lib/queue-drain";
 import { safeEqualSecret } from "@/lib/crypto";
 import { signatureMatchesAny } from "@/lib/webhook-signature";
 
