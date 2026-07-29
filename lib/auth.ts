@@ -1,5 +1,5 @@
 import "server-only";
-import { createHmac, scryptSync } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { safeEqualHex, safeEqualSecret } from "./crypto";
 
 export const SESSION_COOKIE = "many_session";
@@ -11,20 +11,30 @@ function adminPassword(): string {
   return s;
 }
 
-// A senha NÃO é usada como chave HMAC direta. Se um cookie vazar, uma chave
-// derivada por HMAC deixaria testar bilhões de senhas por segundo até achar a
-// que produz aquele valor. scrypt encarece cada tentativa a ponto de tornar a
-// busca inviável.
+// Chave da sessão, derivada da senha por um SHA-256 com separação de domínio.
 //
-// O sal é uma constante da aplicação. O ideal seria um valor por instalação,
-// mas ele teria de vir do banco — e esta função roda no proxy.ts, a cada
-// requisição do painel. Consultar o banco ali custaria mais do que o ganho.
+// ISTO JÁ FOI scrypt E FOI REVERTIDO DE PROPÓSITO. Não volte a colocar sem ler
+// o que segue.
 //
-// Derivada uma vez por processo, porque scrypt é lento de propósito.
+// O scrypt protegia contra um cenário estreito: alguém que roubasse o cookie
+// não conseguiria descobrir a senha por força bruta a partir dele. Mas quem tem
+// o cookie JÁ TEM o painel — e o cookie é httpOnly, secure e sameSite.
+//
+// O preço foi medido em produção: ~640 ms por processo novo, pagos no login e
+// em qualquer página protegida cujo proxy estivesse frio. Um login que era
+// instantâneo passou a levar 1,3 s.
+//
+// A defesa que de fato importa contra adivinhação de senha é o freio de
+// tentativas em lib/login-throttle.ts, que continua de pé.
+//
+// Derivada uma vez por processo; a esse custo, mais por hábito que por
+// necessidade.
 let cachedKey: Buffer | null = null;
 
 function sessionKey(): Buffer {
-  if (!cachedKey) cachedKey = scryptSync(adminPassword(), "directpro-session-v2", 32);
+  if (!cachedKey) {
+    cachedKey = createHash("sha256").update(`directpro-session:${adminPassword()}`).digest();
+  }
   return cachedKey;
 }
 
@@ -50,6 +60,8 @@ export function isValidSession(value: string | undefined, now: number = Date.now
   const exp = Number(expira);
   if (!Number.isSafeInteger(exp) || exp * 1000 <= now) return false;
 
+  // A assinatura cobre o prazo, não só a versão: sem isso, esticar a data no
+  // cookie à mão renovaria a sessão sozinho.
   return safeEqualHex(sign(`${versao}.${expira}`), assinatura);
 }
 
