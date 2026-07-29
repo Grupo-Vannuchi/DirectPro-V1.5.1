@@ -70,7 +70,12 @@ export async function conversationMessages(
   contactIgId: string,
   limite = 200
 ): Promise<InboxMessage[]> {
-  const [doEvents, daFila] = await Promise.all([
+  // O driver do Neon devolve linha sem tipo. Este é o formato cru das duas
+  // consultas abaixo — a conversão vai no resultado já resolvido, que é o
+  // idioma usado no resto do projeto.
+  type LinhaCrua = { direction: "in" | "out"; at: string | Date; mid: string | null; text: string };
+
+  const [doEvents, daFila] = (await Promise.all([
     sql().query(
       `select case when e.type = 'message_sent' then 'out' else 'in' end as direction,
               e.created_at as at,
@@ -97,14 +102,10 @@ export async function conversationMessages(
        limit $3`,
       [accountId, contactIgId, limite]
     ),
-  ]);
+  ])) as [LinhaCrua[], LinhaCrua[]];
 
-  const paraInbox = (linhas: unknown[]): InboxMessage[] =>
-    (linhas as { direction: "in" | "out"; at: string | Date; mid: string | null; text: string }[])
-      .map((l) => ({ ...l, at: new Date(l.at) }));
+  const paraInbox = (linhas: LinhaCrua[]): InboxMessage[] =>
+    linhas.map((l) => ({ ...l, at: new Date(l.at) }));
 
-  return mergeMessages(
-    paraInbox(doEvents as unknown as unknown[]),
-    paraInbox(daFila as unknown as unknown[])
-  );
+  return mergeMessages(paraInbox(doEvents), paraInbox(daFila));
 }
