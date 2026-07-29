@@ -106,8 +106,17 @@ export default async function Home({
     (async () =>
       account
         ? ((await sql().query(
+        // O @ vem de contacts OU do próprio evento. Quem comenta sem casar
+        // nenhuma palavra-chave não vira contato — o motor sai antes disso —,
+        // mas o comentário carrega o username no payload. Sem esta última
+        // alternativa, todo comentário que não disparou automação aparecia sem
+        // nome nenhum. A /eventos já fazia essa volta; aqui faltava.
         `select e.id, e.type, e.created_at,
-                coalesce(cf.username, cs.username) as person
+                coalesce(
+                  cf.username,
+                  cs.username,
+                  e.payload->'from'->>'username'
+                ) as person
          from events e
          left join contacts cf
            on cf.account_id = e.account_id and cf.ig_id = e.payload->'from'->>'id'
