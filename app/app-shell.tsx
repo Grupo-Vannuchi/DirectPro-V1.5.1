@@ -9,6 +9,7 @@ import {
   IconUsers,
   IconActivity,
   IconSettings,
+  IconStore,
   IconSun,
   IconMoon,
   IconMenu,
@@ -35,11 +36,10 @@ const NAV_GROUPS: {
   },
   {
     label: "Sistema",
-    // A Loja está fora do menu de propósito. A página e a rota continuam de pé
-    // (/loja), mas o catálogo vem de um domínio de terceiro que pode trocar o
-    // que aparece aqui a qualquer momento, sem aviso. Volta ao menu quando
-    // apontar para um catálogo próprio.
-    items: [{ href: "/setup", label: "Configuração", icon: IconSettings }],
+    items: [
+      { href: "/loja", label: "Produtos", icon: IconStore },
+      { href: "/setup", label: "Configuração", icon: IconSettings },
+    ],
   },
 ];
 
