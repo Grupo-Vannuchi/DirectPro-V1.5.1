@@ -56,7 +56,7 @@ export default function LojaPage() {
     <div className="space-y-6">
       <header>
         <h1 className={pageTitle}>Produtos</h1>
-        <p className={pageSubtitle}>Outras soluções da N8X Marketing.</p>
+        <p className={pageSubtitle}>Outras soluções que podem ajudar o seu negócio.</p>
       </header>
 
       <div className="grid items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-3">

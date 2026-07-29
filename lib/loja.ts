@@ -24,11 +24,17 @@ export const PRODUTOS: Produto[] = [
   {
     id: "n8x-marketing",
     nome: "N8X Marketing",
+    descricao: "Agência de marketing digital: sites, SEO, redes sociais, tráfego pago e branding.",
     url: "https://n8xmarketing.com.br",
   },
   {
     id: "metodo-ia",
     nome: "Metodo IA",
+    descricao: "CRM com inteligência artificial: da prospecção ao fechamento, num fluxo só.",
+    // ATENÇÃO ao renovar o domínio: "metodotia" foi registrado com erro de
+    // digitação e a intenção é corrigir na renovação. Quando isso acontecer,
+    // este endereço para de funcionar — e o botão vai levar a lugar nenhum sem
+    // dar nenhum sinal, porque ninguém abre esta página toda semana.
     url: "https://metodotia.com",
   },
 ];
