@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
-import { createHmac } from "node:crypto";
 import {
   handleCommentEvent,
   handleMessagingEvent,
@@ -11,7 +10,8 @@ import {
   type MessagingEvent,
 } from "@/lib/engine";
 import { getConfig } from "@/lib/db";
-import { safeEqualHex, safeEqualSecret } from "@/lib/crypto";
+import { safeEqualSecret } from "@/lib/crypto";
+import { signatureMatchesAny } from "@/lib/webhook-signature";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -89,21 +89,11 @@ export async function GET(req: NextRequest) {
   });
 }
 
-function assinaturaConfere(rawBody: string, header: string | null, secret: string): boolean {
-  if (!secret || !header?.startsWith("sha256=")) return false;
-  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  return safeEqualHex(expected, header.slice(7));
-}
-
 // ============================================================
 // POST — evento da Meta
 //
-// A assinatura é conferida contra TODAS as chaves conhecidas do install. Um
-// app de Instagram tem duas chaves fáceis de confundir (a do "Login do
-// Instagram" e a do app em Configurações → Básico), e a Meta assina com a do
-// app. Conferindo só contra uma, o install que salvou a outra rejeitaria 100%
-// dos eventos com 401 — silenciosamente, que é exatamente o sintoma de
-// "conecta e cria automação, mas nada acontece".
+// A assinatura é conferida contra TODAS as chaves conhecidas do install; o
+// porquê está em lib/webhook-signature.ts.
 // ============================================================
 export async function POST(req: NextRequest) {
   // corpo CRU antes de qualquer parse — a assinatura é do corpo exato
@@ -131,7 +121,7 @@ export async function POST(req: NextRequest) {
     return new NextResponse("sem chave secreta configurada", { status: 401 });
   }
 
-  if (!chaves.some((s) => assinaturaConfere(rawBody, assinatura, s))) {
+  if (!signatureMatchesAny(rawBody, assinatura, chaves)) {
     // NUNCA silencioso: sem este registro, o usuário vê "não chega nada" e não
     // tem como descobrir que o problema é a chave secreta errada. Limitado por
     // janela porque este caminho aceita requisição de qualquer origem.

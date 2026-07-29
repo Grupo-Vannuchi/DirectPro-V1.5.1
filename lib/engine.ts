@@ -22,6 +22,16 @@ import {
 } from "./ig";
 import { scheduleTick } from "./qstash";
 import { renderVariables, type VariableContext } from "./variables";
+import {
+  privateReplyKey,
+  commentReplyKey,
+  followGateKey,
+  emailAskKey,
+  followupKey,
+  emailAnswerKey,
+  welcomeMessageKey,
+  storyReactionKey,
+} from "./dedupe";
 
 // ============================================================
 // Recepção: transforma eventos do webhook em itens na fila
@@ -306,7 +316,7 @@ async function portaoDeFollow(
         quick_reply_payload: `FOLLOW:${auto.id}`,
       },
       // a tentativa entra na chave: cada pedido é um item novo na fila
-      dedupe_key: `fg:${auto.id}:${contactIgId}:${dayBucket()}:${tentativa}`,
+      dedupe_key: followGateKey(auto.id, contactIgId, dayBucket(), tentativa),
     });
   }
   return false;
@@ -336,7 +346,7 @@ async function advanceFlow(account: Account, auto: Automation, contactIgId: stri
         payload: {
           text: auto.email_text || "Me manda seu melhor e-mail que eu te envio o link 👇",
         },
-        dedupe_key: `ea:${auto.id}:${contactIgId}:${dayBucket()}`,
+        dedupe_key: emailAskKey(auto.id, contactIgId, dayBucket()),
       });
       return;
     }
@@ -357,7 +367,7 @@ async function enqueueFollowups(accountId: string, automationId: string, contact
       contact_ig_id: contactIgId,
       automation_id: automationId,
       payload: { text: f.text, button_label: f.button_label, url: f.url },
-      dedupe_key: `fu:${f.id}:${contactIgId}:${dayBucket()}`,
+      dedupe_key: followupKey(f.id, contactIgId, dayBucket()),
       not_before: new Date(Date.now() + f.delay_minutes * 60_000),
     });
   }
@@ -423,7 +433,7 @@ export async function handleCommentEvent(entryId: string | undefined, value: Com
         quick_reply_label: auto.quick_reply_label,
         quick_reply_payload: `AUTO:${auto.id}`,
       },
-      dedupe_key: `pr:${commentId}`,
+      dedupe_key: privateReplyKey(commentId),
     });
   }
 
@@ -437,7 +447,7 @@ export async function handleCommentEvent(entryId: string | undefined, value: Com
       automation_id: auto.id,
       comment_id: commentId,
       payload: { text: publicReply },
-      dedupe_key: `cr:${commentId}`,
+      dedupe_key: commentReplyKey(commentId),
     });
   }
 }
@@ -512,7 +522,7 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
       contact_ig_id: senderId,
       automation_id: estado[0].last_automation_id ?? undefined,
       payload: { text: "Acho que esse e-mail saiu errado 🤔 Me manda de novo, só o e-mail." },
-      dedupe_key: `ear:${msg.mid ?? `${senderId}:${Date.now()}`}`,
+      dedupe_key: emailAnswerKey(msg.mid, senderId, Date.now()),
     });
     return;
   }
@@ -529,7 +539,7 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
         contact_ig_id: senderId,
         automation_id: auto.id,
         payload: { message_id: msg.mid, reaction: auto.story_reaction },
-        dedupe_key: `rx:${msg.mid}`,
+        dedupe_key: storyReactionKey(msg.mid),
       });
     }
 
@@ -545,7 +555,7 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
           quick_reply_label: auto.quick_reply_label,
           quick_reply_payload: `AUTO:${auto.id}`,
         },
-        dedupe_key: `wm:${msg.mid ?? `${senderId}:${Date.now()}`}`,
+        dedupe_key: welcomeMessageKey(msg.mid, senderId, Date.now()),
       });
       await upsertContact(account.ig_user_id, senderId, { last_automation_id: auto.id });
     }
