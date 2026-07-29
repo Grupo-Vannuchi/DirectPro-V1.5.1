@@ -279,13 +279,15 @@ export type OutgoingMessage =
       };
     };
 
+export type SendResult = { message_id: string | null; recipient_id: string | null };
+
 export async function sendMessage(
   igUserId: string,
   token: string,
   recipient: Recipient,
   message: OutgoingMessage
-): Promise<Json> {
-  return graphFetch(`/${igUserId}/messages`, {
+): Promise<SendResult> {
+  const json = await graphFetch(`/${igUserId}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -293,6 +295,12 @@ export async function sendMessage(
     },
     body: JSON.stringify({ recipient, message }),
   });
+  // A Meta devolve message_id e recipient_id. Campo ausente vira null em vez de
+  // undefined, para o banco receber sempre algo gravável.
+  return {
+    message_id: texto(json.message_id) ?? null,
+    recipient_id: texto(json.recipient_id) ?? null,
+  };
 }
 
 export async function replyToComment(

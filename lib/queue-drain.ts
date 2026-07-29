@@ -33,13 +33,23 @@ async function windowOpen(accountId: string, contactIgId: string | null): Promis
   return windowState(rows[0]?.last_reply_at ?? null).open;
 }
 
-async function finish(id: string, fields: { status: string; sent_at?: Date; not_before?: Date; error?: string }) {
+async function finish(
+  id: string,
+  fields: {
+    status: string;
+    sent_at?: Date;
+    not_before?: Date;
+    error?: string;
+    message_id?: string | null;
+  }
+) {
   await sql().query(
     `update queue set
        status = $2,
        sent_at = coalesce($3, sent_at),
        not_before = coalesce($4, not_before),
-       error = coalesce($5, error)
+       error = coalesce($5, error),
+       message_id = coalesce($6, message_id)
      where id = $1`,
     [
       id,
@@ -47,6 +57,7 @@ async function finish(id: string, fields: { status: string; sent_at?: Date; not_
       fields.sent_at?.toISOString() ?? null,
       fields.not_before?.toISOString() ?? null,
       fields.error ?? null,
+      fields.message_id ?? null,
     ]
   );
 }
@@ -71,11 +82,13 @@ async function variableContext(
   }
 }
 
+type ItemOutcome = { outcome: "sent" | "skipped"; messageId?: string | null };
+
 async function processItem(
   item: QueueItem,
   igUserId: string,
   token: string
-): Promise<"sent" | "skipped"> {
+): Promise<ItemOutcome> {
   const p = item.payload as {
     text?: string;
     quick_reply_label?: string;
@@ -95,15 +108,15 @@ async function processItem(
 
   if (item.kind === "comment_reply") {
     await replyToComment(item.comment_id!, token, texto);
-    return "sent";
+    return { outcome: "sent" };
   }
 
   // Reação (coraçãozinho) na mensagem que a pessoa mandou
   if (item.kind === "story_reaction") {
-    if (!p.message_id || !item.contact_ig_id) return "skipped";
-    if (!(await windowOpen(igUserId, item.contact_ig_id))) return "skipped";
+    if (!p.message_id || !item.contact_ig_id) return { outcome: "skipped" };
+    if (!(await windowOpen(igUserId, item.contact_ig_id))) return { outcome: "skipped" };
     await sendReaction(igUserId, token, item.contact_ig_id, p.message_id, p.reaction || "❤️");
-    return "sent";
+    return { outcome: "sent" };
   }
 
   let recipient: { comment_id: string } | { id: string };
@@ -111,7 +124,7 @@ async function processItem(
     recipient = { comment_id: item.comment_id! };
   } else {
     // DMs comuns só dentro da janela de 24h — regra da Meta
-    if (!(await windowOpen(igUserId, item.contact_ig_id))) return "skipped";
+    if (!(await windowOpen(igUserId, item.contact_ig_id))) return { outcome: "skipped" };
     recipient = { id: item.contact_ig_id! };
   }
 
@@ -129,8 +142,8 @@ async function processItem(
     message = { text: texto };
   }
 
-  await sendMessage(igUserId, token, recipient, message);
-  return "sent";
+  const enviada = await sendMessage(igUserId, token, recipient, message);
+  return { outcome: "sent", messageId: enviada.message_id };
 }
 
 export async function drainQueue(): Promise<{ sent: number; skipped: number; failed: number }> {
@@ -179,9 +192,13 @@ export async function drainQueue(): Promise<{ sent: number; skipped: number; fai
       continue;
     }
     try {
-      const outcome = await processItem(item, account.ig_user_id, account.access_token);
+      const { outcome, messageId } = await processItem(
+        item,
+        account.ig_user_id,
+        account.access_token
+      );
       if (outcome === "sent") {
-        await finish(item.id, { status: "sent", sent_at: new Date() });
+        await finish(item.id, { status: "sent", sent_at: new Date(), message_id: messageId });
         result.sent++;
         await sleep(GAP_MS);
       } else {

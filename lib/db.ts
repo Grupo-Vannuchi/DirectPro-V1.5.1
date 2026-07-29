@@ -153,6 +153,7 @@ export type QueueItem = {
   claimed_at: Date | null;
   sent_at: Date | null;
   error: string | null;
+  message_id: string | null;
   created_at: Date;
 };
 
@@ -282,6 +283,10 @@ const DDL = [
     attempted_at timestamptz not null default now()
   )`,
   `create index if not exists login_attempts_idx on login_attempts(ip, attempted_at desc)`,
+  // Id que a Meta devolve ao aceitar a mensagem. Guardado para o inbox saber
+  // que o eco que chegou depois é desta mesma mensagem, e não mostrá-la duas
+  // vezes na conversa.
+  `alter table queue add column if not exists message_id text`,
   // Filtro "de qual post veio" em /eventos: sem este índice de expressão, cada
   // filtragem varre a tabela inteira.
   `create index if not exists events_media_idx on events ((payload->'media'->>'id'))`,
