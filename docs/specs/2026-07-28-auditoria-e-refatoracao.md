@@ -199,13 +199,34 @@ restaurado.
 importar o motor num teste puxaria banco, Meta e QStash junto. Entra na Fase 3,
 quando `engine.ts` for dividido.
 
-### Fase 3 — Reorganização
+### Fase 3 — Reorganização ◐ parcial
 
-Só depois da rede de proteção existir.
+| Commit | O quê | Antes → depois |
+|---|---|---|
+| `cd6516d` | `form.tsx` dividido em formulário, pré-visualização, seletor e tipos | 1018 → 583 |
+| `6685978` | `engine.ts` separado em recepção e envio; `extractEmail` para `match.ts` com 7 testes | 780 → 516 |
+| `cc3489b` | Nomes compartilhados unificados em inglês | 17 identificadores |
 
-Quebrar `form.tsx`, `engine.ts` (separando *receber* de *enviar*) e
-`setup/page.tsx` · unificar identificadores em inglês · passada nos comentários
-com um critério só: **fica o que explica por quê, sai o que narra o quê**.
+**Decisão sobre a URL:** os nomes dos parâmetros (`?tipo=`, `?periodo=`) ficam
+em português, junto com as rotas `/eventos`, `/automacoes`, `/contatos`. Quem lê
+a barra de endereço é o dono do painel. A tradução entre parâmetro e propriedade
+vive no mapa `PARAM` de `event-filters.ts`, num lugar só.
+
+#### O que ficou de fora
+
+**`setup/page.tsx` (561 linhas)** não foi dividido.
+
+**A unificação de idioma parou nos nomes compartilhados.** Variáveis locais
+(`filtros`, `busca`, `pendente`, `mapa`, `partes`) e nomes de componente
+(`Filtros`, `Realce`, `EtapasRotativas`) seguem em português. Foi uma escolha:
+esses nomes são lidos dentro do próprio bloco, cercados de comentários em
+português, e renomear todos seria dezenas de arquivos de mudança mecânica com
+risco real de erro de digitação — para um ganho que ninguém percebe lendo o
+código. Os nomes que aparecem em `import` e em assinatura de função, que são os
+que de fato entregavam a mistura, estão unificados.
+
+**A passada nos comentários não aconteceu.** O critério continua valendo para
+quando for feita: fica o que explica *por quê*, sai o que narra *o quê*.
 
 ---
 
