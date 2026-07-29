@@ -171,18 +171,33 @@ mudou. Nada além disso muda para quem usa o painel.
 **Novidade de infraestrutura:** tabela `login_attempts`, criada pelo
 `ensureSchema` como todas as outras.
 
-### Fase 2 — Testes
+### Fase 2 — Testes ✅ concluída
 
-Vitest, apenas sobre funções puras — onde mora quase todo o risco silencioso e
-onde o custo de testar é próximo de zero:
+`6649f8f` — 82 testes em 6 arquivos, `npm test`.
 
-`matches()` e `findMatch()` (regras de palavra-chave) · geração da chave de
-deduplicação · `assinaturaConfere()` com vetores HMAC conhecidos ·
-`parseFilters` e `buildWhere` (lista branca e escape de `%` e `_`) ·
-`extractEmail`.
+| Arquivo | Cobre |
+|---|---|
+| `tests/match.test.ts` | palavra-chave, acentos, caixa, chave em branco |
+| `tests/dedupe.test.ts` | os oito formatos de chave da fila, por extenso |
+| `tests/event-filters.test.ts` | lista branca, injeção pela URL, ida e volta |
+| `tests/event-query.test.ts` | parênteses do WHERE, parâmetros, escape do LIKE |
+| `tests/webhook-signature.test.ts` | vetor HMAC fixo, corpo alterado, cabeçalho torto |
+| `tests/crypto.test.ts` | comparação de segredos com entrada torta |
 
-**Fora de escopo:** banco e chamadas à Meta. Exigiriam mocks e fixtures, com
-muito mais trabalho e cobertura de risco menor.
+Dois módulos saíram de dentro de arquivos maiores para poderem ser testados,
+sem mudança de comportamento: `lib/webhook-signature.ts` (estava no route
+handler) e `lib/dedupe.ts` (eram oito literais espalhados pelo motor, com os
+valores mantidos byte a byte).
+
+A suíte foi verificada por sabotagem — parênteses do `WHERE` e escape de
+curingas removidos de propósito, testes confirmados vermelhos, código
+restaurado.
+
+**Fora de escopo, como planejado:** banco e chamadas à Meta.
+
+**`extractEmail` ficou de fora.** Continua privada dentro de `engine.ts`, e
+importar o motor num teste puxaria banco, Meta e QStash junto. Entra na Fase 3,
+quando `engine.ts` for dividido.
 
 ### Fase 3 — Reorganização
 
@@ -196,9 +211,12 @@ com um critério só: **fica o que explica por quê, sai o que narra o quê**.
 
 ## Verificação
 
-Por fase: `npm run lint` e `npm run build` limpos, e a partir da Fase 2
-`npm test` verde. Ao final de cada fase, conferência manual do contrato acima
-com o banco real conectado.
+Por fase: `npm run lint`, `npm run build` e `npm test` limpos. Ao final de cada
+fase, conferência manual do contrato acima com o banco real conectado.
+
+Teste novo não vale por existir. Todo bloco de teste que protege uma regra de
+negócio deve ser verificado por sabotagem: quebrar o código de propósito,
+confirmar que fica vermelho, restaurar.
 
 O erro de lint pré-existente (C3) é corrigido na Fase 1. A partir dali,
 `npm run lint` vermelho passa a significar regressão de verdade — hoje ele
