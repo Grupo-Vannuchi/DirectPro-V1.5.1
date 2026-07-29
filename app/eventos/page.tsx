@@ -16,7 +16,7 @@ import PostLine from "./post-line";
 import Realce from "./realce";
 import Filtros, { type OpcaoPost } from "./filtros";
 import { resolvePosts, type PostRef } from "@/lib/media-lookup";
-import { LIMITE_EVENTOS, parseFilters, temFiltro } from "@/lib/event-filters";
+import { EVENTS_LIMIT, parseFilters, hasFilters } from "@/lib/event-filters";
 import { EVENTS_FROM, buildWhere, postsComEventos } from "@/lib/event-query";
 
 export const dynamic = "force-dynamic";
@@ -63,7 +63,7 @@ export default async function EventosPage({
                     coalesce(cf.profile_pic, cs.profile_pic) as person_pic
              ${EVENTS_FROM}
              where ${where.sql}
-             order by e.created_at desc limit ${LIMITE_EVENTOS}`,
+             order by e.created_at desc limit ${EVENTS_LIMIT}`,
             where.params
           ),
           sql().query(
@@ -108,7 +108,7 @@ export default async function EventosPage({
     caption: posts.get(p.id)?.caption ?? null,
   }));
 
-  const filtrando = temFiltro(filtros);
+  const filtrando = hasFilters(filtros);
 
   return (
     <div className="space-y-10">
@@ -189,7 +189,7 @@ export default async function EventosPage({
               <b className="font-semibold">{total}</b>{" "}
               {total === 1 ? "interação" : "interações"}
               {filtrando && " neste recorte"}
-              {total > LIMITE_EVENTOS && ` · mostrando as ${LIMITE_EVENTOS} mais recentes`}
+              {total > EVENTS_LIMIT && ` · mostrando as ${EVENTS_LIMIT} mais recentes`}
             </p>
           )}
         </div>

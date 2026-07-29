@@ -3,14 +3,14 @@
 import { useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  BUSCA_MAX,
-  PERIODOS,
-  SEM_FILTRO,
-  TIPOS,
-  temFiltro,
+  SEARCH_MAX_LENGTH,
+  PERIODS,
+  NO_FILTERS,
+  EVENT_TYPES,
+  hasFilters,
   toQueryString,
   type EventFilters,
-  type TipoKey,
+  type EventTypeKey,
 } from "@/lib/event-filters";
 import { eventBadge } from "../labels";
 import { subtle } from "../ui";
@@ -33,7 +33,7 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
   const [abrirPosts, setAbrirPosts] = useState(false);
   const [busca, setBusca] = useState(filtros.q ?? "");
 
-  function navegar(mudanca: Partial<EventFilters>) {
+  function navigate(mudanca: Partial<EventFilters>) {
     const qs = toQueryString({ ...filtros, ...mudanca });
     setAbrirPosts(false);
     iniciar(() => router.push(qs ? `${pathname}?${qs}` : pathname));
@@ -53,13 +53,13 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
     >
       {/* período */}
       <div className="inline-flex gap-0.5 rounded-xl border border-zinc-300 p-0.5 dark:border-zinc-700">
-        {PERIODOS.map((p) => {
-          const marcado = filtros.periodo === p.key;
+        {PERIODS.map((p) => {
+          const marcado = filtros.period === p.key;
           return (
             <button
               key={p.key}
               type="button"
-              onClick={() => navegar({ periodo: p.key })}
+              onClick={() => navigate({ period: p.key })}
               aria-pressed={marcado}
               className={`rounded-[9px] px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/20 ${
                 marcado
@@ -94,7 +94,7 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
           {filtros.post && (
             <button
               type="button"
-              onClick={() => navegar({ post: null })}
+              onClick={() => navigate({ post: null })}
               aria-label="Remover filtro de post"
               className="ml-1 rounded-lg px-1.5 py-1 text-sm text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             >
@@ -106,13 +106,13 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
 
       {/* tipo */}
       <select
-        value={filtros.tipo ?? ""}
-        onChange={(e) => navegar({ tipo: (e.target.value || null) as TipoKey | null })}
+        value={filtros.type ?? ""}
+        onChange={(e) => navigate({ type: (e.target.value || null) as EventTypeKey | null })}
         aria-label="Tipo de interação"
-        className={`${controle} ${filtros.tipo ? ativo : ""}`}
+        className={`${controle} ${filtros.type ? ativo : ""}`}
       >
         <option value="">Todos os tipos</option>
-        {TIPOS.map((t) => (
+        {EVENT_TYPES.map((t) => (
           <option key={t} value={t}>
             {eventBadge(t).label}
           </option>
@@ -124,26 +124,26 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
         className="flex min-w-[11rem] flex-1 items-center"
         onSubmit={(e) => {
           e.preventDefault();
-          navegar({ q: busca.trim() || null });
+          navigate({ q: busca.trim() || null });
         }}
       >
         <input
           type="search"
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
-          maxLength={BUSCA_MAX}
+          maxLength={SEARCH_MAX_LENGTH}
           placeholder="Buscar palavra ou @perfil…"
           aria-label="Buscar por palavra ou perfil"
           className={`w-full ${controle} ${filtros.q ? ativo : ""} placeholder:text-zinc-400 dark:placeholder:text-zinc-600`}
         />
       </form>
 
-      {temFiltro(filtros) && (
+      {hasFilters(filtros) && (
         <button
           type="button"
           onClick={() => {
             setBusca("");
-            navegar(SEM_FILTRO);
+            navigate(NO_FILTERS);
           }}
           className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
         >
@@ -162,7 +162,7 @@ export default function Filtros({ filtros, posts }: { filtros: EventFilters; pos
               <button
                 key={p.id}
                 type="button"
-                onClick={() => navegar({ post: p.id })}
+                onClick={() => navigate({ post: p.id })}
                 title={p.caption ?? p.id}
                 className="flex flex-col gap-1 focus-visible:outline-none"
               >

@@ -235,9 +235,9 @@ async function loadAutomation(
 // Quantas vezes repetimos o pedido antes de parar de insistir. A verificação
 // continua acontecendo depois disso — só o lembrete para, para não virar spam
 // (e não chamar a atenção da Meta).
-const MAX_PEDIDOS_DE_FOLLOW = 5;
+const MAX_FOLLOW_REQUESTS = 5;
 
-async function limparEstadoDeFollow(accountId: string, igId: string) {
+async function clearFollowState(accountId: string, igId: string) {
   await sql().query(
     `update contacts set
        awaiting = case when awaiting = 'follow' then null else awaiting end,
@@ -250,7 +250,7 @@ async function limparEstadoDeFollow(accountId: string, igId: string) {
 // Portão de seguidor: devolve true só quando a pessoa REALMENTE segue.
 // Enquanto não seguir, marca o estado, repete o pedido (com moderação) e
 // devolve false — o próximo passo do fluxo não sai.
-async function portaoDeFollow(
+async function followGate(
   account: Account,
   auto: Automation,
   contactIgId: string
@@ -268,12 +268,12 @@ async function portaoDeFollow(
       contact_ig_id: contactIgId,
       automation_id: auto.id,
     });
-    await limparEstadoDeFollow(account.ig_user_id, contactIgId);
+    await clearFollowState(account.ig_user_id, contactIgId);
     return true;
   }
 
   if (segue) {
-    await limparEstadoDeFollow(account.ig_user_id, contactIgId);
+    await clearFollowState(account.ig_user_id, contactIgId);
     return true;
   }
 
@@ -286,7 +286,7 @@ async function portaoDeFollow(
   )) as { follow_attempts: number }[];
   const tentativa = rows[0]?.follow_attempts ?? 1;
 
-  if (tentativa <= MAX_PEDIDOS_DE_FOLLOW) {
+  if (tentativa <= MAX_FOLLOW_REQUESTS) {
     await enqueue({
       account_id: account.ig_user_id,
       kind: "dm_follow_gate",
@@ -311,7 +311,7 @@ async function portaoDeFollow(
 // seguir o perfil → informar o e-mail → receber o link.
 // Cada etapa é opcional; sem nenhuma ligada, o link sai direto (como antes).
 async function advanceFlow(account: Account, auto: Automation, contactIgId: string) {
-  if (!(await portaoDeFollow(account, auto, contactIgId))) return;
+  if (!(await followGate(account, auto, contactIgId))) return;
 
   if (auto.ask_email) {
     const rows = (await sql().query(

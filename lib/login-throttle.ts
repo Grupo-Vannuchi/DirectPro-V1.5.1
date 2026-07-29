@@ -11,10 +11,10 @@ import { sql, ensureSchema } from "./db";
 // sua, e um atacante que caia em instâncias diferentes nunca alcançaria o
 // limite. Login é raro; uma consulta aqui não pesa.
 
-const JANELA_MINUTOS = 15;
-const MAX_TENTATIVAS = 8;
+const WINDOW_MINUTES = 15;
+const MAX_ATTEMPTS = 8;
 
-export const LOCKOUT_MESSAGE = `Muitas tentativas. Espere ${JANELA_MINUTOS} minutos e tente de novo.`;
+export const LOCKOUT_MESSAGE = `Muitas tentativas. Espere ${WINDOW_MINUTES} minutos e tente de novo.`;
 
 // Falha ABERTA de propósito: se o banco estiver fora do ar, o freio não
 // funciona, mas o login também não trava. Barrar aqui deixaria o dono do painel
@@ -26,9 +26,9 @@ export async function isLockedOut(ip: string): Promise<boolean> {
     const rows = (await sql().query(
       `select count(*)::int as total from login_attempts
        where ip = $1 and attempted_at > now() - make_interval(mins => $2::int)`,
-      [ip, JANELA_MINUTOS]
+      [ip, WINDOW_MINUTES]
     )) as { total: number }[];
-    return (rows[0]?.total ?? 0) >= MAX_TENTATIVAS;
+    return (rows[0]?.total ?? 0) >= MAX_ATTEMPTS;
   } catch {
     return false;
   }

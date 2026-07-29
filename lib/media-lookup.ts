@@ -8,8 +8,8 @@ import { getMedia, getMediaById } from "./ig";
 // Uma listagem cobre os posts recentes, que é de onde vem quase todo
 // comentário. O resto (post antigo) vira busca avulsa, com teto para uma lista
 // cheia de posts diferentes não virar uma enxurrada de chamadas.
-const RECENTES = 40;
-const MAX_AVULSOS = 8;
+const RECENT_MEDIA_LIMIT = 40;
+const MAX_INDIVIDUAL_LOOKUPS = 8;
 
 export type PostRef = {
   id: string;
@@ -49,7 +49,7 @@ export async function resolvePosts(
   if (!procurados.size) return mapa;
 
   try {
-    for (const m of await getMedia(igUserId, token, RECENTES)) {
+    for (const m of await getMedia(igUserId, token, RECENT_MEDIA_LIMIT)) {
       const ref = toPostRef(m);
       if (ref && procurados.has(ref.id)) mapa.set(ref.id, ref);
     }
@@ -57,7 +57,7 @@ export async function resolvePosts(
     // segue para as buscas avulsas: elas podem dar certo mesmo assim
   }
 
-  const faltando = [...procurados].filter((id) => !mapa.has(id)).slice(0, MAX_AVULSOS);
+  const faltando = [...procurados].filter((id) => !mapa.has(id)).slice(0, MAX_INDIVIDUAL_LOOKUPS);
   if (faltando.length) {
     const buscas = await Promise.allSettled(faltando.map((id) => getMediaById(id, token)));
     for (const b of buscas) {

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { buildWhere } from "@/lib/event-query";
-import { SEM_FILTRO, type EventFilters } from "@/lib/event-filters";
+import { NO_FILTERS, type EventFilters } from "@/lib/event-filters";
 
-const filtros = (p: Partial<EventFilters> = {}): EventFilters => ({ ...SEM_FILTRO, ...p });
+const filtros = (p: Partial<EventFilters> = {}): EventFilters => ({ ...NO_FILTERS, ...p });
 
 describe("isolamento por conta", () => {
   it("sempre filtra pela conta, mesmo sem nenhum filtro", () => {
@@ -15,7 +15,7 @@ describe("isolamento por conta", () => {
     // Sem os parênteses, `A or B and C` é lido como `A or (B and C)`: bastaria
     // um filtro ao lado para a listagem passar a mostrar evento de OUTRA conta.
     // Foi um bug real; este teste existe para ele não voltar.
-    const w = buildWhere("conta-1", filtros({ tipo: "comment" }));
+    const w = buildWhere("conta-1", filtros({ type: "comment" }));
     expect(w.sql).toContain("(e.account_id = $1 or e.account_id is null)");
     expect(w.sql).toContain("and");
   });
@@ -23,7 +23,7 @@ describe("isolamento por conta", () => {
 
 describe("filtros viram parâmetro, nunca texto colado no SQL", () => {
   it("tipo entra como $2", () => {
-    const w = buildWhere("conta-1", filtros({ tipo: "comment" }));
+    const w = buildWhere("conta-1", filtros({ type: "comment" }));
     expect(w.sql).toContain("e.type = $2");
     expect(w.params).toEqual(["conta-1", "comment"]);
   });
@@ -35,19 +35,19 @@ describe("filtros viram parâmetro, nunca texto colado no SQL", () => {
   });
 
   it("período vira um número de dias, não um trecho de SQL", () => {
-    const w = buildWhere("conta-1", filtros({ periodo: "7d" }));
+    const w = buildWhere("conta-1", filtros({ period: "7d" }));
     expect(w.sql).toContain("make_interval(days => $2::int)");
     expect(w.params).toEqual(["conta-1", 7]);
   });
 
   it("'tudo' não acrescenta condição de data", () => {
-    const w = buildWhere("conta-1", filtros({ periodo: "tudo" }));
+    const w = buildWhere("conta-1", filtros({ period: "tudo" }));
     expect(w.sql).not.toContain("make_interval");
     expect(w.params).toHaveLength(1);
   });
 
   it("numera os parâmetros na ordem em que aparecem no SQL", () => {
-    const w = buildWhere("c", filtros({ tipo: "comment", post: "123", periodo: "30d" }));
+    const w = buildWhere("c", filtros({ type: "comment", post: "123", period: "30d" }));
     const usados = [...w.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
     expect(Math.max(...usados)).toBe(w.params.length);
     expect(w.params).toEqual(["c", "comment", "123", 30]);
@@ -72,7 +72,7 @@ describe("busca", () => {
   it("agrupa as alternativas, para o `or` não vazar para fora", () => {
     // Sem o parêntese em volta do bloco de busca, o `or` se juntaria às outras
     // condições e o filtro de conta deixaria de valer.
-    const w = buildWhere("conta-1", filtros({ q: "quero", tipo: "comment" }));
+    const w = buildWhere("conta-1", filtros({ q: "quero", type: "comment" }));
     expect(w.sql).toContain("(e.payload->>'text' ilike");
     expect(w.sql.trimEnd().endsWith(")")).toBe(true);
 
@@ -115,9 +115,9 @@ describe("busca", () => {
 describe("todos os filtros juntos", () => {
   it("combina as condições com and e não perde nenhum parâmetro", () => {
     const w = buildWhere("conta-1", {
-      tipo: "message",
+      type: "message",
       post: "999",
-      periodo: "24h",
+      period: "24h",
       q: "oi",
     });
     expect(w.params).toEqual(["conta-1", "message", "999", 1, "%oi%"]);

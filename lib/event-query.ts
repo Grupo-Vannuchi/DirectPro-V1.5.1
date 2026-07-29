@@ -1,5 +1,5 @@
 import "server-only";
-import { PERIODOS, type EventFilters } from "./event-filters";
+import { PERIODS, type EventFilters } from "./event-filters";
 
 // COMO o filtro vira SQL. Fica separado de event-filters.ts porque a barra é
 // componente de cliente: as listas de valores válidos ela precisa, o esquema do
@@ -22,7 +22,7 @@ export type Where = { sql: string; params: unknown[] };
 
 // % e _ são curingas do LIKE. Sem escapar, quem busca "100%" recebe a lista
 // inteira e acha que o filtro está quebrado.
-function paraBusca(termo: string): string {
+function toSearchPattern(termo: string): string {
   return `%${termo.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
@@ -34,8 +34,8 @@ export function buildWhere(accountId: string, f: EventFilters): Where {
   const params: unknown[] = [accountId];
   const ref = () => `$${params.length}`;
 
-  if (f.tipo) {
-    params.push(f.tipo);
+  if (f.type) {
+    params.push(f.type);
     partes.push(`e.type = ${ref()}`);
   }
 
@@ -44,14 +44,14 @@ export function buildWhere(accountId: string, f: EventFilters): Where {
     partes.push(`e.payload->'media'->>'id' = ${ref()}`);
   }
 
-  const dias = PERIODOS.find((p) => p.key === f.periodo)?.dias ?? null;
-  if (dias !== null) {
-    params.push(dias);
+  const days = PERIODS.find((p) => p.key === f.period)?.days ?? null;
+  if (days !== null) {
+    params.push(days);
     partes.push(`e.created_at >= now() - make_interval(days => ${ref()}::int)`);
   }
 
   if (f.q) {
-    params.push(paraBusca(f.q));
+    params.push(toSearchPattern(f.q));
     const t = ref();
     // Texto do comentário, texto da DM, @ que veio no evento e os dois
     // usernames dos contatos. Campo ausente vira null e o `or` cuida disso.
