@@ -1,0 +1,110 @@
+import "server-only";
+import { sql } from "./db";
+
+// De onde vem uma conversa.
+//
+// Não existe tabela de mensagens. As recebidas estão em `events` desde que o
+// app subiu (o webhook grava o evento inteiro); as enviadas saem pela `queue` e
+// voltam como eco, também em `events`. Costurar as duas fontes aproveita todo o
+// histórico já acumulado, sem migração e sem backfill.
+//
+// A dedução pelo `mid` existe porque uma mensagem enviada pelo sistema aparece
+// NAS DUAS fontes: na fila, porque nós a enfileiramos, e no eco, porque a Meta
+// nos devolve o que foi enviado.
+
+export type InboxMessage = {
+  mid: string | null;
+  direction: "in" | "out";
+  text: string;
+  at: Date;
+};
+
+export function mergeMessages(
+  fromEvents: InboxMessage[],
+  fromQueue: InboxMessage[]
+): InboxMessage[] {
+  const jaVistos = new Set(fromEvents.map((m) => m.mid).filter((m): m is string => Boolean(m)));
+  const daFila = fromQueue.filter((m) => !m.mid || !jaVistos.has(m.mid));
+  return [...fromEvents, ...daFila].sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
+const TIPOS_RECEBIDOS = ["message", "story_reply", "quick_reply"];
+
+// Lista de conversas: uma linha por pessoa, ordenada pela última troca.
+export async function listConversations(accountId: string, limite = 50) {
+  return (await sql().query(
+    `with trocas as (
+       select e.payload->'sender'->>'id' as cid, e.created_at as at
+       from events e
+       where e.account_id = $1 and e.type = any($2::text[])
+       union all
+       select e.payload->'recipient'->>'id', e.created_at
+       from events e
+       where e.account_id = $1 and e.type = 'message_sent'
+     )
+     select t.cid as ig_id,
+            max(t.at) as last_at,
+            count(*)::int as total,
+            c.username, c.name, c.profile_pic, c.last_reply_at
+     from trocas t
+     left join contacts c on c.account_id = $1 and c.ig_id = t.cid
+     where t.cid is not null
+     group by t.cid, c.username, c.name, c.profile_pic, c.last_reply_at
+     order by last_at desc
+     limit $3`,
+    [accountId, TIPOS_RECEBIDOS, limite]
+  )) as {
+    ig_id: string;
+    last_at: Date;
+    total: number;
+    username: string | null;
+    name: string | null;
+    profile_pic: string | null;
+    last_reply_at: Date | null;
+  }[];
+}
+
+// Mensagens de UMA conversa, já fundidas e em ordem.
+export async function conversationMessages(
+  accountId: string,
+  contactIgId: string,
+  limite = 200
+): Promise<InboxMessage[]> {
+  const [doEvents, daFila] = await Promise.all([
+    sql().query(
+      `select case when e.type = 'message_sent' then 'out' else 'in' end as direction,
+              e.created_at as at,
+              e.payload->'message'->>'mid' as mid,
+              coalesce(e.payload->'message'->>'text', '') as text
+       from events e
+       where e.account_id = $1
+         and (
+           (e.type = any($3::text[]) and e.payload->'sender'->>'id' = $2)
+           or (e.type = 'message_sent' and e.payload->'recipient'->>'id' = $2)
+         )
+       order by e.created_at desc
+       limit $4`,
+      [accountId, contactIgId, TIPOS_RECEBIDOS, limite]
+    ),
+    sql().query(
+      `select 'out' as direction,
+              coalesce(q.sent_at, q.created_at) as at,
+              q.message_id as mid,
+              coalesce(q.payload->>'text', '') as text
+       from queue q
+       where q.account_id = $1 and q.contact_ig_id = $2 and q.status = 'sent'
+       order by coalesce(q.sent_at, q.created_at) desc
+       limit $3`,
+      [accountId, contactIgId, limite]
+    ),
+  ]);
+
+  const paraInbox = (linhas: unknown[]): InboxMessage[] =>
+    (linhas as { direction: "in" | "out"; at: string | Date; mid: string | null; text: string }[])
+      .map((l) => ({ ...l, at: new Date(l.at) }));
+
+  return mergeMessages(
+    paraInbox(doEvents as unknown as unknown[]),
+    paraInbox(daFila as unknown as unknown[])
+  );
+}
