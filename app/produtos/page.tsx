@@ -1,4 +1,4 @@
-import { PRODUTOS, type Produto } from "@/lib/loja";
+import { PRODUTOS, type Produto } from "@/lib/produtos";
 import { card, cardHover, muted, pageTitle, pageSubtitle, btnPrimary } from "../ui";
 
 // Marca do produto sem depender de imagem hospedada em lugar nenhum: as

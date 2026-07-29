@@ -1,4 +1,4 @@
-// Produtos da N8X exibidos em /loja.
+// Produtos da N8X exibidos em /produtos.
 //
 // Antes isto era um catálogo de LOJA: cada item tinha preço, período, lista de
 // recursos e link de checkout, e a lista vinha de um JSON hospedado por

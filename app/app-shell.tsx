@@ -37,7 +37,7 @@ const NAV_GROUPS: {
   {
     label: "Sistema",
     items: [
-      { href: "/loja", label: "Produtos", icon: IconStore },
+      { href: "/produtos", label: "Produtos", icon: IconStore },
       { href: "/setup", label: "Configuração", icon: IconSettings },
     ],
   },
