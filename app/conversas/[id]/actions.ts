@@ -1,7 +1,9 @@
 "use server";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { getSelectedAccount } from "@/lib/account";
 import { enqueueManualReply } from "@/lib/engine";
+import { drainQueue } from "@/lib/queue-drain";
 import { windowState } from "@/lib/inbox-window";
 import { sql, ensureSchema } from "@/lib/db";
 
@@ -31,6 +33,24 @@ export async function sendReply(
   }
 
   await enqueueManualReply(account.ig_user_id, contactIgId, text);
+
+  // Enfileirar NÃO envia. O enqueue só agenda um toque do QStash para item com
+  // atraso; uma resposta digitada agora não tem atraso nenhum. Sem esta
+  // drenagem, a mensagem ficaria parada até o próximo evento do Instagram ou
+  // até o cron diário das 9h — e a janela de 24h pode fechar antes disso, o que
+  // faria o item ser descartado em silêncio DEPOIS de o atendente ver sucesso.
+  //
+  // Vai em after() pelo mesmo motivo do webhook: a resposta da ação não espera
+  // o envio. A consequência é que a mensagem aparece na conversa na próxima
+  // carga da página, não instantaneamente.
+  after(async () => {
+    try {
+      await drainQueue();
+    } catch {
+      // a trava atômica garante que o próximo dreno recupera
+    }
+  });
+
   revalidatePath(`/conversas/${contactIgId}`);
   return {};
 }
