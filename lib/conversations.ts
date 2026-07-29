@@ -98,6 +98,15 @@ export async function conversationMessages(
               coalesce(q.payload->>'text', '') as text
        from queue q
        where q.account_id = $1 and q.contact_ig_id = $2 and q.status = 'sent'
+         -- Só DM de verdade. 'comment_reply' é resposta PÚBLICA no comentário e
+         -- 'story_reaction' é reação sem texto: os dois têm contact_ig_id e
+         -- entrariam na conversa privada como mensagem que nunca existiu.
+         -- Nenhum dos dois recebe message_id, então ficariam com mid nulo e
+         -- jamais seriam deduplicados. KIND NOVO DE DM PRECISA ENTRAR AQUI.
+         and q.kind in (
+           'private_reply','dm_welcome','dm_link','dm_reminder',
+           'dm_follow_gate','dm_email_ask','dm_manual'
+         )
        order by coalesce(q.sent_at, q.created_at) desc
        limit $3`,
       [accountId, contactIgId, limite]
