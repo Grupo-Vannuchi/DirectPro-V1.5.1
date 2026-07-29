@@ -11,7 +11,7 @@ import { ACCOUNT_COOKIE } from "@/lib/account";
 const sora = Sora({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DirectPro — comentário vira DM",
+  title: "MetodoChat — comentário vira DM",
   description: "Automação do seu Instagram: palavra-chave no comentário vira DM com seu link.",
 };
 

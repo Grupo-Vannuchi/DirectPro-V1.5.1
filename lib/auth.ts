@@ -2,7 +2,7 @@ import "server-only";
 import { createHash, createHmac } from "node:crypto";
 import { safeEqualHex, safeEqualSecret } from "./crypto";
 
-export const SESSION_COOKIE = "many_session";
+export const SESSION_COOKIE = "metodochat_session";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 dias
 
 function adminPassword(): string {
@@ -33,7 +33,7 @@ let cachedKey: Buffer | null = null;
 
 function sessionKey(): Buffer {
   if (!cachedKey) {
-    cachedKey = createHash("sha256").update(`directpro-session:${adminPassword()}`).digest();
+    cachedKey = createHash("sha256").update(`metodochat-session:${adminPassword()}`).digest();
   }
   return cachedKey;
 }

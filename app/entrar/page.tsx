@@ -10,7 +10,7 @@ export default function EntrarPage() {
       <div className={`p-6 ${card}`}>
         <div className="mb-6 flex items-center gap-2">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500 text-base font-bold text-white">
-            D
+            M
           </span>
           <div>
             <h1 className="text-lg font-bold leading-tight">Entrar no painel</h1>

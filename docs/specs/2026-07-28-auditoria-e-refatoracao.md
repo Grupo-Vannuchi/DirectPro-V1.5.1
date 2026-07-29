@@ -1,5 +1,10 @@
 # Auditoria e refatoração do DirectPro
 
+> **Nota de 29/07/2026:** o produto foi renomeado para **MetodoChat**. Este
+> documento mantém o nome antigo de propósito — é o registro de uma decisão
+> tomada naquela data, e reescrever o passado só confundiria quem for ler o
+> histórico do repositório.
+
 **Data:** 28/07/2026
 **Estado:** aprovado, em execução
 **Base:** commit `a94d6c1`

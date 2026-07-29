@@ -4,7 +4,7 @@ import { listAccounts, Account } from "./db";
 
 // Conta atualmente selecionada no painel. O valor vive num cookie; se estiver
 // ausente ou apontar para uma conta que não existe mais, cai na primeira.
-export const ACCOUNT_COOKIE = "many_account";
+export const ACCOUNT_COOKIE = "metodochat_account";
 
 export async function getSelectedAccount(): Promise<Account | null> {
   const accounts = await listAccounts();

@@ -1,4 +1,4 @@
-# DirectPro 💬
+# MetodoChat 💬
 
 **Comentário vira DM.** Automatize o seu Instagram sem mensalidade: quando alguém comenta uma
 palavra-chave num post ou reels (ou responde um story), a pessoa recebe uma DM automática com o
@@ -33,7 +33,7 @@ funciona com resposta a story e DM recebida com palavra-chave.
 ### Parte 1 — Subir o código no seu GitHub
 
 1. Crie sua conta em [github.com](https://github.com) (se ainda não tiver).
-2. Acesse [github.com/new](https://github.com/new): nome `many`, marque **Private** → **Create
+2. Acesse [github.com/new](https://github.com/new): nome `metodochat`, marque **Private** → **Create
    repository**.
 3. Na página do repositório vazio, clique em **"uploading an existing file"**, **arraste todo o
    conteúdo descompactado do ZIP** (as pastas `app`, `lib`, `public` e os arquivos soltos) e
@@ -42,7 +42,7 @@ funciona com resposta a story e DM recebida com palavra-chave.
 ### Parte 2 — Publicar na Vercel
 
 1. Acesse [vercel.com/new](https://vercel.com/new) e entre com o GitHub.
-2. Em **Import Git Repository**, importe o `many`.
+2. Em **Import Git Repository**, importe o `metodochat`.
 3. Antes de concluir, abra **Environment Variables** e adicione `ADMIN_PASSWORD` = a senha que
    você quer para o seu painel. Clique em **Deploy**.
 4. Depois do deploy: aba **Storage** → **Create Database** → **Neon** → plano Free → **Create**

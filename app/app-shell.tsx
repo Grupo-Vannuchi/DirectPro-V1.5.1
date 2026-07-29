@@ -125,7 +125,7 @@ function Brand() {
       href="/"
       className="flex items-center px-3 text-[17px] font-semibold tracking-[-0.02em] text-zinc-900 transition-opacity hover:opacity-70 dark:text-zinc-50"
     >
-      DirectPro<span className="text-indigo-500">.</span>
+      MetodoChat<span className="text-indigo-500">.</span>
     </Link>
   );
 }
