@@ -1,5 +1,6 @@
 import "server-only";
 import { sql, ensureSchema, listAccounts, getConfig, QueueItem } from "./db";
+import { windowState } from "./inbox-window";
 import { scheduleTick } from "./qstash";
 import {
   sendMessage,
@@ -15,7 +16,6 @@ import { renderVariables, type VariableContext } from "./variables";
 // Envio: drena a fila respeitando limites da Meta
 // ============================================================
 
-const WINDOW_MS = 24 * 60 * 60 * 1000;
 const HOURLY_CAP = 190; // margem sobre o limite prático de ~200/h, POR CONTA
 const BATCH_SIZE = 15;
 const GAP_MS = 600; // ~1,6 envios/segundo
@@ -30,8 +30,7 @@ async function windowOpen(accountId: string, contactIgId: string | null): Promis
     `select last_reply_at from contacts where account_id = $1 and ig_id = $2`,
     [accountId, contactIgId]
   )) as { last_reply_at: Date | null }[];
-  const last = rows[0]?.last_reply_at ? new Date(rows[0].last_reply_at).getTime() : 0;
-  return Date.now() - last < WINDOW_MS - 5 * 60_000; // margem de 5 min
+  return windowState(rows[0]?.last_reply_at ?? null).open;
 }
 
 async function finish(id: string, fields: { status: string; sent_at?: Date; not_before?: Date; error?: string }) {
