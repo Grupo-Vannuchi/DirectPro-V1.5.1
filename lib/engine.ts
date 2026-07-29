@@ -21,6 +21,7 @@ import {
   emailAnswerKey,
   welcomeMessageKey,
   storyReactionKey,
+  manualReplyKey,
 } from "./dedupe";
 
 // ============================================================
@@ -568,4 +569,27 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   ) {
     await enqueueFollowups(account.ig_user_id, lastAuto, senderId);
   }
+}
+
+// Resposta escrita por uma pessoa no painel.
+//
+// Entra na MESMA fila das automáticas de propósito: assim ela herda a trava
+// atômica, o limite de ~190 envios/hora por conta, as novas tentativas e a
+// checagem da janela de 24h. Um caminho de envio paralelo teria que reimplementar
+// tudo isso — e erraria em algum ponto.
+//
+// O processItem já sabe tratar este caso: "dm_manual" não é comment_reply nem
+// story_reaction, então cai no caminho de DM comum com texto simples.
+export async function enqueueManualReply(
+  accountId: string,
+  contactIgId: string,
+  text: string
+): Promise<boolean> {
+  return enqueue({
+    account_id: accountId,
+    kind: "dm_manual",
+    contact_ig_id: contactIgId,
+    payload: { text },
+    dedupe_key: manualReplyKey(contactIgId, Date.now()),
+  });
 }

@@ -141,7 +141,8 @@ export type QueueItem = {
     | "dm_reminder"
     | "dm_follow_gate"
     | "dm_email_ask"
-    | "story_reaction";
+    | "story_reaction"
+    | "dm_manual";
   contact_ig_id: string | null;
   automation_id: string | null;
   comment_id: string | null;
@@ -341,7 +342,7 @@ async function migrateAccounts(s: SqlClient): Promise<void> {
       end if;
       alter table queue add constraint queue_kind_check check (kind in (
         'private_reply','comment_reply','dm_welcome','dm_link','dm_reminder',
-        'dm_follow_gate','dm_email_ask','story_reaction'
+        'dm_follow_gate','dm_email_ask','story_reaction','dm_manual'
       ));
     exception when duplicate_object then null;
     end $$;
