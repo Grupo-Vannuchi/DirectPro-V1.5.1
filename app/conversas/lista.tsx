@@ -63,11 +63,15 @@ export default function Lista({
                 className="h-9 w-9"
               />
               <div className="min-w-0 flex-1">
-                {/* O @ leva a linha inteira. A data desceu para a segunda linha
-                    porque "30/07/2026, 07:36" ao lado do nome espremia os dois e
-                    cortava @ de gente com usuário longo, que é a maioria. */}
+                {/* Nome primeiro, como no Instagram — o @ fica no cabeçalho da
+                    conversa, onde sobra espaço. Nome do Instagram é campo livre
+                    e às vezes vem só com enfeite (༄●⃝ᶫᵒꪜe☯), então o @ é o
+                    reserva quando não há nome.
+
+                    A data desceu para a segunda linha: ao lado do nome ela
+                    espremia os dois e cortava quem tem usuário longo. */}
                 <p className="truncate text-sm font-medium">
-                  {c.username ? `@${c.username}` : (c.name ?? "Visitante")}
+                  {c.name?.trim() || (c.username ? `@${c.username}` : "Visitante")}
                 </p>
                 <div className={`mt-0.5 flex items-center gap-2 text-xs ${muted}`}>
                   <span className="shrink-0">{fmtRelative(c.last_at)}</span>

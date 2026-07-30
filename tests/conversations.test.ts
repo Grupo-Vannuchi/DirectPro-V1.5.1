@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   mergeMessages,
   attachmentLabel,
+  attachmentHasImage,
   type InboxMessage,
   type MessageDelivery,
 } from "@/lib/conversations";
@@ -19,6 +20,11 @@ const msg = (
   at: new Date(2026, 6, 29, 10, minuto),
   delivery,
   attachment: null,
+});
+
+const comAnexo = (tipo: string, title: string | null, url: string | null): InboxMessage => ({
+  ...msg("m-anexo", "in", "", 0),
+  attachment: { type: tipo, url, title },
 });
 
 describe("mergeMessages", () => {
@@ -80,10 +86,37 @@ describe("rótulo de anexo", () => {
     }
   });
 
-  it("diz que a Meta não envia, em vez de fingir que é anexo comum", () => {
-    // unsupported_type é a Meta avisando que não consegue entregar o conteúdo.
-    // Chamar de "Anexo" faria parecer defeito do painel.
-    expect(attachmentLabel("unsupported_type")).toContain("Meta");
+  it("carrega a legenda quando a Meta manda, e aceita quando não manda", () => {
+    // ig_reel e ig_post vêm com title; share e unsupported_type vêm só com url.
+    // O cartão precisa aguentar os dois casos sem quebrar.
+    const reel = comAnexo("ig_reel", "Legenda do reel", "https://instagram.com/reel/abc");
+    expect(reel.attachment?.title).toBe("Legenda do reel");
+
+    const share = comAnexo("share", null, "https://instagram.com/p/xyz");
+    expect(share.attachment?.title).toBeNull();
+    expect(share.attachment?.url).toContain("instagram.com");
+  });
+
+  it("mensagem só com anexo passa pela fusão sem sumir", () => {
+    // O texto é vazio nesse caso — nada no merge pode descartar por isso.
+    const r = mergeMessages([comAnexo("ig_reel", "oi", "https://x")], []);
+    expect(r).toHaveLength(1);
+    expect(r[0].attachment?.type).toBe("ig_reel");
+  });
+
+  it("sabe em quais tipos a url é o arquivo, e em quais não é", () => {
+    // Verificado contra o CDN da Meta: ig_post e share devolvem image/jpeg;
+    // ig_reel devolve permalink do instagram.com, sem mídia.
+    expect(attachmentHasImage("ig_post")).toBe(true);
+    expect(attachmentHasImage("share")).toBe(true);
+    expect(attachmentHasImage("image")).toBe(true);
+    expect(attachmentHasImage("ig_reel")).toBe(false);
+  });
+
+  it("não tenta carregar unsupported_type como imagem", () => {
+    // Naquele tipo veio um vídeo de 11 MB. Carregar isso dentro da lista de
+    // mensagens seria hostil com quem está no celular.
+    expect(attachmentHasImage("unsupported_type")).toBe(false);
   });
 
   it("tipo desconhecido vira rótulo genérico, não some", () => {

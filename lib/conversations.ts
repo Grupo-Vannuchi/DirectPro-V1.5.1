@@ -24,7 +24,11 @@ export type MessageDelivery = "sent" | "sending" | "failed";
 // compartilha reel na DM o tempo inteiro. O payload já traz tipo e link; sem
 // isto a conversa mostrava só "(sem texto)" e o atendente não fazia ideia do que
 // a pessoa tinha mandado.
-export type InboxAttachment = { type: string; url: string | null };
+// `title` é a legenda do reel ou do post compartilhado — a Meta manda em
+// ig_reel e ig_post, e é o mais perto de uma prévia que dá para chegar. Ela NÃO
+// manda miniatura em tipo nenhum, então a imagem do cartão não existe: pegá-la
+// exigiria a permissão oembed_read, que passa por revisão da Meta.
+export type InboxAttachment = { type: string; url: string | null; title: string | null };
 
 export type InboxMessage = {
   mid: string | null;
@@ -47,15 +51,28 @@ const ANEXOS: Record<string, string> = {
   file: "📎 Arquivo",
   story_mention: "📖 Menção no story",
   location: "📍 Localização",
-  // Marcador da PRÓPRIA Meta: ela recebeu algo que a API não sabe representar
-  // (figurinha, mídia que some, e por aí vai). Dizer isso é melhor que "Anexo",
-  // porque não é defeito do painel e o atendente precisa saber que existe algo
-  // que ele não está vendo.
-  unsupported_type: "🚫 Conteúdo que a Meta não envia",
+  // A API diz "não suportado", mas o arquivo VEM: testando a URL desses casos,
+  // voltou video/mp4. É a Meta não sabendo classificar, não a Meta se recusando
+  // a entregar — então o rótulo diz que há mídia, e o link abre.
+  unsupported_type: "🎞️ Mídia",
 };
 
 export function attachmentLabel(type: string): string {
   return ANEXOS[type] ?? "📎 Anexo";
+}
+
+// Para quais tipos a `url` é o ARQUIVO, e não uma página.
+//
+// Confirmado contra o CDN da Meta: ig_post e share devolvem image/jpeg. ig_reel
+// é o único que devolve permalink do instagram.com, sem mídia direta —
+// justamente o tipo mais comum, então a maioria dos cartões segue sem imagem.
+//
+// unsupported_type fica de fora de propósito: veio vídeo de 11 MB, e carregar
+// isso dentro da lista de mensagens seria hostil com quem está no celular.
+const COM_IMAGEM = new Set(["ig_post", "share", "image"]);
+
+export function attachmentHasImage(type: string): boolean {
+  return COM_IMAGEM.has(type);
 }
 
 export function mergeMessages(
@@ -120,6 +137,7 @@ export async function conversationMessages(
     delivery: MessageDelivery;
     attachment_type: string | null;
     attachment_url: string | null;
+    attachment_title: string | null;
   };
 
   const [doEvents, daFila] = (await Promise.all([
@@ -134,7 +152,8 @@ export async function conversationMessages(
               -- um por mensagem; mostrar "📎 Anexo" para o primeiro é melhor do
               -- que a bolha vazia que aparecia antes.
               e.payload->'message'->'attachments'->0->>'type' as attachment_type,
-              e.payload->'message'->'attachments'->0->'payload'->>'url' as attachment_url
+              e.payload->'message'->'attachments'->0->'payload'->>'url' as attachment_url,
+              e.payload->'message'->'attachments'->0->'payload'->>'title' as attachment_title
        from events e
        where e.account_id = $1
          and (
@@ -162,7 +181,8 @@ export async function conversationMessages(
               end as delivery,
               -- A v1 não envia mídia, então o que sai nunca tem anexo.
               null as attachment_type,
-              null as attachment_url
+              null as attachment_url,
+              null as attachment_title
        from queue q
        -- SEM filtro de status, de propósito. Antes só entrava 'sent', e por isso
        -- uma resposta recém-enviada ficava invisível: ela nasce 'pending' e a
@@ -194,10 +214,12 @@ export async function conversationMessages(
   ])) as [LinhaCrua[], LinhaCrua[]];
 
   const paraInbox = (linhas: LinhaCrua[]): InboxMessage[] =>
-    linhas.map(({ attachment_type, attachment_url, ...l }) => ({
+    linhas.map(({ attachment_type, attachment_url, attachment_title, ...l }) => ({
       ...l,
       at: new Date(l.at),
-      attachment: attachment_type ? { type: attachment_type, url: attachment_url } : null,
+      attachment: attachment_type
+        ? { type: attachment_type, url: attachment_url, title: attachment_title }
+        : null,
     }));
 
   return mergeMessages(paraInbox(doEvents), paraInbox(daFila));
