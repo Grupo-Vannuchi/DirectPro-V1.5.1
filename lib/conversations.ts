@@ -112,7 +112,11 @@ export async function conversationMessages(
       `select 'out' as direction,
               coalesce(q.sent_at, q.created_at) as at,
               q.message_id as mid,
-              coalesce(q.payload->>'text', '') as text,
+              -- 'sent_text' é o texto COM as variáveis resolvidas, gravado no
+              -- envio. 'text' é o template. Mensagem anterior a este registro só
+              -- tem o template, e aí é ele mesmo — melhor mostrar "ola {name}"
+              -- do que uma bolha vazia.
+              coalesce(q.payload->>'sent_text', q.payload->>'text', '') as text,
               case q.status
                 when 'sent' then 'sent'
                 when 'failed' then 'failed'

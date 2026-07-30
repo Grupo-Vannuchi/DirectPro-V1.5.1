@@ -41,6 +41,8 @@ async function finish(
     not_before?: Date;
     error?: string;
     message_id?: string | null;
+    // O texto COM as variáveis já resolvidas, exatamente como foi entregue.
+    sentText?: string;
   }
 ) {
   await sql().query(
@@ -49,7 +51,16 @@ async function finish(
        sent_at = coalesce($3, sent_at),
        not_before = coalesce($4, not_before),
        error = coalesce($5, error),
-       message_id = coalesce($6, message_id)
+       message_id = coalesce($6, message_id),
+       -- Guarda o texto entregue AO LADO do template, sem substituí-lo. A fila é
+       -- a única memória do que saiu: a Meta não devolve eco de mensagem enviada
+       -- pela API, então sem isto o inbox mostra "ola {name}" para sempre — um
+       -- texto que nunca chegou a ninguém. Manter o template junto ajuda a
+       -- depurar automação depois.
+       payload = case
+         when $7::text is null then payload
+         else jsonb_set(payload, '{sent_text}', to_jsonb($7::text))
+       end
      where id = $1`,
     [
       id,
@@ -58,6 +69,7 @@ async function finish(
       fields.not_before?.toISOString() ?? null,
       fields.error ?? null,
       fields.message_id ?? null,
+      fields.sentText ?? null,
     ]
   );
 }
@@ -82,7 +94,12 @@ async function variableContext(
   }
 }
 
-type ItemOutcome = { outcome: "sent" | "skipped"; messageId?: string | null };
+type ItemOutcome = {
+  outcome: "sent" | "skipped";
+  messageId?: string | null;
+  // Texto com as variáveis resolvidas, para o finish() registrar o que saiu.
+  sentText?: string;
+};
 
 async function processItem(
   item: QueueItem,
@@ -108,7 +125,7 @@ async function processItem(
 
   if (item.kind === "comment_reply") {
     await replyToComment(item.comment_id!, token, texto);
-    return { outcome: "sent" };
+    return { outcome: "sent", sentText: texto };
   }
 
   // Reação (coraçãozinho) na mensagem que a pessoa mandou
@@ -143,7 +160,7 @@ async function processItem(
   }
 
   const enviada = await sendMessage(igUserId, token, recipient, message);
-  return { outcome: "sent", messageId: enviada.message_id };
+  return { outcome: "sent", messageId: enviada.message_id, sentText: texto };
 }
 
 export async function drainQueue(): Promise<{ sent: number; skipped: number; failed: number }> {
@@ -192,13 +209,13 @@ export async function drainQueue(): Promise<{ sent: number; skipped: number; fai
       continue;
     }
     try {
-      const { outcome, messageId } = await processItem(
+      const { outcome, messageId, sentText } = await processItem(
         item,
         account.ig_user_id,
         account.access_token
       );
       if (outcome === "sent") {
-        await finish(item.id, { status: "sent", sent_at: new Date(), message_id: messageId });
+        await finish(item.id, { status: "sent", sent_at: new Date(), message_id: messageId, sentText });
         result.sent++;
         await sleep(GAP_MS);
       } else {
