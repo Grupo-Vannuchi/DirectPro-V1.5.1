@@ -5,9 +5,10 @@ import { getSelectedAccount } from "@/lib/account";
 import { conversationMessages } from "@/lib/conversations";
 import { windowState, formatWindowLeft } from "@/lib/inbox-window";
 import { fmtDate } from "@/lib/format";
-import { card, muted, pageTitle, badgeOk, badgeNeutral } from "../../ui";
+import { muted, badgeOk, badgeNeutral } from "../../ui";
 import Avatar from "../../avatar";
 import ReplyForm from "./reply-form";
+import RolarParaFim from "./rolar-para-fim";
 
 export const dynamic = "force-dynamic";
 
@@ -42,23 +43,33 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
   const quem = contato?.username ? `@${contato.username}` : (contato?.name ?? "Visitante");
 
   return (
-    <div className="space-y-5">
-      <div>
-        <Link href="/conversas" className={`text-xs ${muted} hover:underline`}>
-          ← Conversas
+    <>
+      {/* Cabeçalho parado no topo da coluna */}
+      <div className="flex items-center gap-3 border-b border-zinc-200/80 px-4 py-3 dark:border-zinc-800">
+        {/* No desktop a lista está do lado; este atalho só serve no celular. */}
+        <Link
+          href="/conversas"
+          aria-label="Voltar para a lista"
+          className={`-ml-1 rounded-lg px-2 py-1 text-sm lg:hidden ${muted}`}
+        >
+          ←
         </Link>
-        <div className="mt-2 flex items-center gap-3">
-          <Avatar src={contato?.profile_pic ?? null} name={quem} className="h-10 w-10" textClassName="text-sm" />
-          <h1 className={pageTitle}>{quem}</h1>
-          <span className={janela.open ? badgeOk : badgeNeutral}>
-            {janela.open ? `responde por ${formatWindowLeft(janela.msLeft)}` : "só leitura"}
-          </span>
-        </div>
+        <Avatar
+          src={contato?.profile_pic ?? null}
+          name={quem}
+          className="h-9 w-9"
+          textClassName="text-sm"
+        />
+        <p className="min-w-0 flex-1 truncate text-sm font-semibold">{quem}</p>
+        <span className={janela.open ? badgeOk : badgeNeutral}>
+          {janela.open ? `responde por ${formatWindowLeft(janela.msLeft)}` : "só leitura"}
+        </span>
       </div>
 
-      <div className={`flex flex-col gap-2 p-4 ${card}`}>
+      {/* Só as mensagens rolam */}
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-4">
         {!mensagens.length && (
-          <p className={`py-8 text-center text-sm ${muted}`}>Nenhuma mensagem nesta conversa.</p>
+          <p className={`m-auto text-sm ${muted}`}>Nenhuma mensagem nesta conversa.</p>
         )}
         {mensagens.map((m, i) => {
           const falhou = m.delivery === "failed";
@@ -87,13 +98,18 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
             </div>
           );
         })}
+        {/* A `key` remonta ao trocar de conversa, e a rolagem vai de novo ao fim */}
+        <RolarParaFim key={id} />
       </div>
 
-      <ReplyForm
-        contactIgId={id}
-        open={janela.open}
-        closedReason="A janela de 24h fechou. Você pode ler esta conversa, mas só é possível responder quem falou há menos de 24 horas — é regra da Meta, não do painel."
-      />
-    </div>
+      {/* Formulário parado no rodapé da coluna */}
+      <div className="border-t border-zinc-200/80 px-4 py-3 dark:border-zinc-800">
+        <ReplyForm
+          contactIgId={id}
+          open={janela.open}
+          closedReason="A janela de 24h fechou. Você pode ler, mas só é possível responder quem falou há menos de 24 horas — é regra da Meta, não do painel."
+        />
+      </div>
+    </>
   );
 }

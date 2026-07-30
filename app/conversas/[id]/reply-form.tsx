@@ -15,11 +15,7 @@ export default function ReplyForm({
   const [state, action, pending] = useActionState(sendReply, undefined);
 
   if (!open) {
-    return (
-      <p className={`rounded-xl border border-dashed border-zinc-300 p-4 text-center text-sm ${muted} dark:border-zinc-700`}>
-        {closedReason}
-      </p>
-    );
+    return <p className={`text-center text-xs ${muted}`}>{closedReason}</p>;
   }
 
   return (
