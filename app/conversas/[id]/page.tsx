@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ensureSchema, sql } from "@/lib/db";
 import { getSelectedAccount } from "@/lib/account";
-import { conversationMessages } from "@/lib/conversations";
+import { conversationMessages, attachmentLabel } from "@/lib/conversations";
 import { windowState, formatWindowLeft } from "@/lib/inbox-window";
 import { fmtDate } from "@/lib/format";
 import { muted, badgeOk, badgeNeutral } from "../../ui";
@@ -85,7 +85,25 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
                     : `self-end bg-indigo-500 text-white ${saindo ? "opacity-60" : ""}`
               }`}
             >
-              {m.text || <span className="italic opacity-70">(sem texto)</span>}
+              {m.attachment && (
+                <p className="mb-1 text-xs font-medium opacity-90">
+                  {m.attachment.url ? (
+                    <a
+                      href={m.attachment.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="underline underline-offset-2"
+                    >
+                      {attachmentLabel(m.attachment.type)} ↗
+                    </a>
+                  ) : (
+                    attachmentLabel(m.attachment.type)
+                  )}
+                </p>
+              )}
+              {/* Sem texto E sem anexo é o caso raro que sobra: aí sim não há o
+                  que mostrar. Com anexo, o rótulo acima já diz o que chegou. */}
+              {m.text || (!m.attachment && <span className="italic opacity-70">(sem texto)</span>)}
               <span
                 className={`mt-1 block text-[10px] ${
                   m.direction === "in" || falhou ? "text-zinc-500" : "text-indigo-100"

@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { windowState, formatWindowLeft } from "@/lib/inbox-window";
-import { fmtDate } from "@/lib/format";
+import { fmtRelative } from "@/lib/format";
 import { muted, badgeOk } from "../ui";
 import Avatar from "../avatar";
 
@@ -63,20 +63,24 @@ export default function Lista({
                 className="h-9 w-9"
               />
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <p className="min-w-0 flex-1 truncate text-sm font-medium">
-                    {c.username ? `@${c.username}` : (c.name ?? "Visitante")}
-                  </p>
-                  <span className={`shrink-0 text-[11px] ${muted}`}>{fmtDate(c.last_at)}</span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-2">
-                  <span className={`text-xs ${muted}`}>
-                    {c.total} {c.total === 1 ? "mensagem" : "mensagens"}
+                {/* O @ leva a linha inteira. A data desceu para a segunda linha
+                    porque "30/07/2026, 07:36" ao lado do nome espremia os dois e
+                    cortava @ de gente com usuário longo, que é a maioria. */}
+                <p className="truncate text-sm font-medium">
+                  {c.username ? `@${c.username}` : (c.name ?? "Visitante")}
+                </p>
+                <div className={`mt-0.5 flex items-center gap-2 text-xs ${muted}`}>
+                  <span className="shrink-0">{fmtRelative(c.last_at)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="shrink-0">
+                    {c.total} {c.total === 1 ? "msg" : "msgs"}
                   </span>
                   {/* Só destaca o que exige ação. "Só leitura" é o estado da
                       maioria das conversas antigas e viraria ruído em todas. */}
                   {janela.open && (
-                    <span className={badgeOk}>{formatWindowLeft(janela.msLeft)}</span>
+                    <span className={`${badgeOk} ml-auto shrink-0`}>
+                      {formatWindowLeft(janela.msLeft)}
+                    </span>
                   )}
                 </div>
               </div>

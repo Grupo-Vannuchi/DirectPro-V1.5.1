@@ -20,13 +20,43 @@ import { sql } from "./db";
 // sair.
 export type MessageDelivery = "sent" | "sending" | "failed";
 
+// Anexo recebido. A v1 não ENVIA mídia, mas recebe o tempo todo — gente
+// compartilha reel na DM o tempo inteiro. O payload já traz tipo e link; sem
+// isto a conversa mostrava só "(sem texto)" e o atendente não fazia ideia do que
+// a pessoa tinha mandado.
+export type InboxAttachment = { type: string; url: string | null };
+
 export type InboxMessage = {
   mid: string | null;
   direction: "in" | "out";
   text: string;
   at: Date;
   delivery: MessageDelivery;
+  attachment: InboxAttachment | null;
 };
+
+// Como cada tipo de anexo se apresenta. O que a Meta manda hoje em DM do
+// Instagram; tipo desconhecido cai no rótulo genérico em vez de sumir.
+const ANEXOS: Record<string, string> = {
+  ig_reel: "🎬 Reel",
+  ig_post: "🖼️ Post",
+  share: "🔗 Publicação",
+  image: "📷 Foto",
+  video: "🎥 Vídeo",
+  audio: "🎤 Áudio",
+  file: "📎 Arquivo",
+  story_mention: "📖 Menção no story",
+  location: "📍 Localização",
+  // Marcador da PRÓPRIA Meta: ela recebeu algo que a API não sabe representar
+  // (figurinha, mídia que some, e por aí vai). Dizer isso é melhor que "Anexo",
+  // porque não é defeito do painel e o atendente precisa saber que existe algo
+  // que ele não está vendo.
+  unsupported_type: "🚫 Conteúdo que a Meta não envia",
+};
+
+export function attachmentLabel(type: string): string {
+  return ANEXOS[type] ?? "📎 Anexo";
+}
 
 export function mergeMessages(
   fromEvents: InboxMessage[],
@@ -88,6 +118,8 @@ export async function conversationMessages(
     mid: string | null;
     text: string;
     delivery: MessageDelivery;
+    attachment_type: string | null;
+    attachment_url: string | null;
   };
 
   const [doEvents, daFila] = (await Promise.all([
@@ -97,7 +129,12 @@ export async function conversationMessages(
               e.payload->'message'->>'mid' as mid,
               coalesce(e.payload->'message'->>'text', '') as text,
               -- Evento é fato consumado: chegou ou saiu, não há meio caminho.
-              'sent' as delivery
+              'sent' as delivery,
+              -- Só o primeiro anexo. A Meta manda um array, mas na prática vem
+              -- um por mensagem; mostrar "📎 Anexo" para o primeiro é melhor do
+              -- que a bolha vazia que aparecia antes.
+              e.payload->'message'->'attachments'->0->>'type' as attachment_type,
+              e.payload->'message'->'attachments'->0->'payload'->>'url' as attachment_url
        from events e
        where e.account_id = $1
          and (
@@ -122,7 +159,10 @@ export async function conversationMessages(
                 when 'failed' then 'failed'
                 when 'skipped' then 'failed'
                 else 'sending'
-              end as delivery
+              end as delivery,
+              -- A v1 não envia mídia, então o que sai nunca tem anexo.
+              null as attachment_type,
+              null as attachment_url
        from queue q
        -- SEM filtro de status, de propósito. Antes só entrava 'sent', e por isso
        -- uma resposta recém-enviada ficava invisível: ela nasce 'pending' e a
@@ -154,7 +194,11 @@ export async function conversationMessages(
   ])) as [LinhaCrua[], LinhaCrua[]];
 
   const paraInbox = (linhas: LinhaCrua[]): InboxMessage[] =>
-    linhas.map((l) => ({ ...l, at: new Date(l.at) }));
+    linhas.map(({ attachment_type, attachment_url, ...l }) => ({
+      ...l,
+      at: new Date(l.at),
+      attachment: attachment_type ? { type: attachment_type, url: attachment_url } : null,
+    }));
 
   return mergeMessages(paraInbox(doEvents), paraInbox(daFila));
 }

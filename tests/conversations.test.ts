@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { mergeMessages, type InboxMessage, type MessageDelivery } from "@/lib/conversations";
+import {
+  mergeMessages,
+  attachmentLabel,
+  type InboxMessage,
+  type MessageDelivery,
+} from "@/lib/conversations";
 
 const msg = (
   mid: string | null,
@@ -7,7 +12,14 @@ const msg = (
   text: string,
   minuto: number,
   delivery: MessageDelivery = "sent"
-): InboxMessage => ({ mid, direction, text, at: new Date(2026, 6, 29, 10, minuto), delivery });
+): InboxMessage => ({
+  mid,
+  direction,
+  text,
+  at: new Date(2026, 6, 29, 10, minuto),
+  delivery,
+  attachment: null,
+});
 
 describe("mergeMessages", () => {
   it("junta as duas fontes em ordem de tempo", () => {
@@ -47,6 +59,37 @@ describe("mergeMessages", () => {
   it("empate de horário não perde mensagem", () => {
     const r = mergeMessages([msg("m1", "in", "a", 0)], [msg("m2", "out", "b", 0)]);
     expect(r).toHaveLength(2);
+  });
+});
+
+describe("rótulo de anexo", () => {
+  it("nomeia os tipos que a Meta manda em DM", () => {
+    // ig_reel é o caso real que motivou isto: gente compartilha reel na DM o
+    // tempo todo, e a conversa mostrava cinco bolhas "(sem texto)" seguidas.
+    expect(attachmentLabel("ig_reel")).toContain("Reel");
+    expect(attachmentLabel("image")).toContain("Foto");
+    expect(attachmentLabel("audio")).toContain("Áudio");
+    expect(attachmentLabel("story_mention")).toContain("story");
+  });
+
+  it("cobre os quatro tipos que já apareceram nos dados reais", () => {
+    // Levantados do banco: ig_reel 12, unsupported_type 3, share 3, ig_post 1.
+    // Nenhum deles pode cair no genérico.
+    for (const tipo of ["ig_reel", "unsupported_type", "share", "ig_post"]) {
+      expect(attachmentLabel(tipo)).not.toBe("📎 Anexo");
+    }
+  });
+
+  it("diz que a Meta não envia, em vez de fingir que é anexo comum", () => {
+    // unsupported_type é a Meta avisando que não consegue entregar o conteúdo.
+    // Chamar de "Anexo" faria parecer defeito do painel.
+    expect(attachmentLabel("unsupported_type")).toContain("Meta");
+  });
+
+  it("tipo desconhecido vira rótulo genérico, não some", () => {
+    // A Meta acrescenta tipo novo sem avisar. Some é pior que genérico.
+    expect(attachmentLabel("tipo_que_ainda_nao_existe")).toBe("📎 Anexo");
+    expect(attachmentLabel("")).toBe("📎 Anexo");
   });
 });
 
