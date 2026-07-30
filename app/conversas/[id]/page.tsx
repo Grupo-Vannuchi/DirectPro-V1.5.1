@@ -60,25 +60,33 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
         {!mensagens.length && (
           <p className={`py-8 text-center text-sm ${muted}`}>Nenhuma mensagem nesta conversa.</p>
         )}
-        {mensagens.map((m, i) => (
-          <div
-            key={`${m.mid ?? "sem-id"}-${i}`}
-            className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${
-              m.direction === "out"
-                ? "self-end bg-indigo-500 text-white"
-                : "self-start bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
-            }`}
-          >
-            {m.text || <span className="italic opacity-70">(sem texto)</span>}
-            <span
-              className={`mt-1 block text-[10px] ${
-                m.direction === "out" ? "text-indigo-100" : "text-zinc-500"
+        {mensagens.map((m, i) => {
+          const falhou = m.delivery === "failed";
+          const saindo = m.delivery === "sending";
+          return (
+            <div
+              key={`${m.mid ?? "sem-id"}-${i}`}
+              className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${
+                m.direction === "in"
+                  ? "self-start bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
+                  : falhou
+                    ? "self-end border border-red-300 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-200"
+                    : `self-end bg-indigo-500 text-white ${saindo ? "opacity-60" : ""}`
               }`}
             >
-              {fmtDate(m.at)}
-            </span>
-          </div>
-        ))}
+              {m.text || <span className="italic opacity-70">(sem texto)</span>}
+              <span
+                className={`mt-1 block text-[10px] ${
+                  m.direction === "in" || falhou ? "text-zinc-500" : "text-indigo-100"
+                }`}
+              >
+                {/* Enquanto não saiu, a hora ainda é a de criação e não diz nada
+                    útil — o que importa é que está a caminho. */}
+                {saindo ? "enviando…" : falhou ? "não enviada" : fmtDate(m.at)}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <ReplyForm

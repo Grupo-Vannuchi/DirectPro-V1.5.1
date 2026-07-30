@@ -12,11 +12,20 @@ import { sql } from "./db";
 // NAS DUAS fontes: na fila, porque nós a enfileiramos, e no eco, porque a Meta
 // nos devolve o que foi enviado.
 
+// Em que pé está o envio, do ponto de vista de quem olha a conversa.
+//
+// Traduz os cinco status da fila para os três que interessam na tela. O
+// atendente não precisa saber a diferença entre 'pending' e 'sending', nem entre
+// 'failed' e 'skipped' — precisa saber se saiu, se está saindo ou se não vai
+// sair.
+export type MessageDelivery = "sent" | "sending" | "failed";
+
 export type InboxMessage = {
   mid: string | null;
   direction: "in" | "out";
   text: string;
   at: Date;
+  delivery: MessageDelivery;
 };
 
 export function mergeMessages(
@@ -73,14 +82,22 @@ export async function conversationMessages(
   // O driver do Neon devolve linha sem tipo. Este é o formato cru das duas
   // consultas abaixo — a conversão vai no resultado já resolvido, que é o
   // idioma usado no resto do projeto.
-  type LinhaCrua = { direction: "in" | "out"; at: string | Date; mid: string | null; text: string };
+  type LinhaCrua = {
+    direction: "in" | "out";
+    at: string | Date;
+    mid: string | null;
+    text: string;
+    delivery: MessageDelivery;
+  };
 
   const [doEvents, daFila] = (await Promise.all([
     sql().query(
       `select case when e.type = 'message_sent' then 'out' else 'in' end as direction,
               e.created_at as at,
               e.payload->'message'->>'mid' as mid,
-              coalesce(e.payload->'message'->>'text', '') as text
+              coalesce(e.payload->'message'->>'text', '') as text,
+              -- Evento é fato consumado: chegou ou saiu, não há meio caminho.
+              'sent' as delivery
        from events e
        where e.account_id = $1
          and (
@@ -95,9 +112,21 @@ export async function conversationMessages(
       `select 'out' as direction,
               coalesce(q.sent_at, q.created_at) as at,
               q.message_id as mid,
-              coalesce(q.payload->>'text', '') as text
+              coalesce(q.payload->>'text', '') as text,
+              case q.status
+                when 'sent' then 'sent'
+                when 'failed' then 'failed'
+                when 'skipped' then 'failed'
+                else 'sending'
+              end as delivery
        from queue q
-       where q.account_id = $1 and q.contact_ig_id = $2 and q.status = 'sent'
+       -- SEM filtro de status, de propósito. Antes só entrava 'sent', e por isso
+       -- uma resposta recém-enviada ficava invisível: ela nasce 'pending' e a
+       -- drenagem acontece depois da resposta da ação. O atendente clicava em
+       -- Enviar, a conversa não mudava, e ele clicava de novo — mandando duas.
+       -- Item que falhou ou foi descartado também precisa aparecer: some em
+       -- silêncio é pior do que aparecer marcado.
+       where q.account_id = $1 and q.contact_ig_id = $2
          -- Só DM de verdade. 'comment_reply' é resposta PÚBLICA no comentário e
          -- 'story_reaction' é reação sem texto: os dois têm contact_ig_id e
          -- entrariam na conversa privada como mensagem que nunca existiu.
