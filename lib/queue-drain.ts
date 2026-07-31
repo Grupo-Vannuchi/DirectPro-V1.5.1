@@ -38,7 +38,9 @@ async function finish(
   fields: {
     status: string;
     sent_at?: Date;
-    not_before?: Date;
+    // Segundos a partir de agora, contados pelo BANCO — mesmo motivo do enqueue:
+    // misturar o relógio da aplicação com o do banco atrasa o item pela diferença.
+    retryInSeconds?: number;
     error?: string;
     message_id?: string | null;
     // O texto COM as variáveis já resolvidas, exatamente como foi entregue.
@@ -49,7 +51,8 @@ async function finish(
     `update queue set
        status = $2,
        sent_at = coalesce($3, sent_at),
-       not_before = coalesce($4, not_before),
+       not_before = case when $4::int is null then not_before
+                          else now() + make_interval(secs => $4::int) end,
        error = coalesce($5, error),
        message_id = coalesce($6, message_id),
        -- Guarda o texto entregue AO LADO do template, sem substituí-lo. A fila é
@@ -66,7 +69,7 @@ async function finish(
       id,
       fields.status,
       fields.sent_at?.toISOString() ?? null,
-      fields.not_before?.toISOString() ?? null,
+      fields.retryInSeconds ?? null,
       fields.error ?? null,
       fields.message_id ?? null,
       fields.sentText ?? null,
@@ -227,7 +230,7 @@ export async function drainQueue(): Promise<{ sent: number; skipped: number; fai
       const giveUp = permanent || item.attempts >= 3;
       await finish(item.id, {
         status: giveUp ? "failed" : "pending",
-        not_before: new Date(Date.now() + 2 * 60_000),
+        retryInSeconds: 120,
         error: err instanceof Error ? err.message.slice(0, 500) : String(err),
       });
       result.failed++;
