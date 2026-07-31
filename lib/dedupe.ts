@@ -45,3 +45,9 @@ export const welcomeMessageKey = (mid: string | undefined, senderId: string, ago
 
 // Reação a story só é enfileirada quando existe mid, então aqui ele é exigido.
 export const storyReactionKey = (mid: string) => `rx:${mid}`;
+
+// Resposta digitada por uma pessoa. Ao contrário das automáticas, ela PODE se
+// repetir de propósito ("oi" duas vezes é legítimo), então o instante entra na
+// chave e cada envio é único.
+export const manualReplyKey = (contactIgId: string, agora: number) =>
+  `mr:${contactIgId}:${agora}`;

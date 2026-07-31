@@ -1,5 +1,6 @@
 import "server-only";
 import { sql, ensureSchema, listAccounts, getConfig, QueueItem } from "./db";
+import { windowState } from "./inbox-window";
 import { scheduleTick } from "./qstash";
 import {
   sendMessage,
@@ -15,7 +16,6 @@ import { renderVariables, type VariableContext } from "./variables";
 // Envio: drena a fila respeitando limites da Meta
 // ============================================================
 
-const WINDOW_MS = 24 * 60 * 60 * 1000;
 const HOURLY_CAP = 190; // margem sobre o limite prático de ~200/h, POR CONTA
 const BATCH_SIZE = 15;
 const GAP_MS = 600; // ~1,6 envios/segundo
@@ -30,24 +30,49 @@ async function windowOpen(accountId: string, contactIgId: string | null): Promis
     `select last_reply_at from contacts where account_id = $1 and ig_id = $2`,
     [accountId, contactIgId]
   )) as { last_reply_at: Date | null }[];
-  const last = rows[0]?.last_reply_at ? new Date(rows[0].last_reply_at).getTime() : 0;
-  return Date.now() - last < WINDOW_MS - 5 * 60_000; // margem de 5 min
+  return windowState(rows[0]?.last_reply_at ?? null).open;
 }
 
-async function finish(id: string, fields: { status: string; sent_at?: Date; not_before?: Date; error?: string }) {
+async function finish(
+  id: string,
+  fields: {
+    status: string;
+    sent_at?: Date;
+    // Segundos a partir de agora, contados pelo BANCO — mesmo motivo do enqueue:
+    // misturar o relógio da aplicação com o do banco atrasa o item pela diferença.
+    retryInSeconds?: number;
+    error?: string;
+    message_id?: string | null;
+    // O texto COM as variáveis já resolvidas, exatamente como foi entregue.
+    sentText?: string;
+  }
+) {
   await sql().query(
     `update queue set
        status = $2,
        sent_at = coalesce($3, sent_at),
-       not_before = coalesce($4, not_before),
-       error = coalesce($5, error)
+       not_before = case when $4::int is null then not_before
+                          else now() + make_interval(secs => $4::int) end,
+       error = coalesce($5, error),
+       message_id = coalesce($6, message_id),
+       -- Guarda o texto entregue AO LADO do template, sem substituí-lo. A fila é
+       -- a única memória do que saiu: a Meta não devolve eco de mensagem enviada
+       -- pela API, então sem isto o inbox mostra "ola {name}" para sempre — um
+       -- texto que nunca chegou a ninguém. Manter o template junto ajuda a
+       -- depurar automação depois.
+       payload = case
+         when $7::text is null then payload
+         else jsonb_set(payload, '{sent_text}', to_jsonb($7::text))
+       end
      where id = $1`,
     [
       id,
       fields.status,
       fields.sent_at?.toISOString() ?? null,
-      fields.not_before?.toISOString() ?? null,
+      fields.retryInSeconds ?? null,
       fields.error ?? null,
+      fields.message_id ?? null,
+      fields.sentText ?? null,
     ]
   );
 }
@@ -72,11 +97,18 @@ async function variableContext(
   }
 }
 
+type ItemOutcome = {
+  outcome: "sent" | "skipped";
+  messageId?: string | null;
+  // Texto com as variáveis resolvidas, para o finish() registrar o que saiu.
+  sentText?: string;
+};
+
 async function processItem(
   item: QueueItem,
   igUserId: string,
   token: string
-): Promise<"sent" | "skipped"> {
+): Promise<ItemOutcome> {
   const p = item.payload as {
     text?: string;
     quick_reply_label?: string;
@@ -96,15 +128,15 @@ async function processItem(
 
   if (item.kind === "comment_reply") {
     await replyToComment(item.comment_id!, token, texto);
-    return "sent";
+    return { outcome: "sent", sentText: texto };
   }
 
   // Reação (coraçãozinho) na mensagem que a pessoa mandou
   if (item.kind === "story_reaction") {
-    if (!p.message_id || !item.contact_ig_id) return "skipped";
-    if (!(await windowOpen(igUserId, item.contact_ig_id))) return "skipped";
+    if (!p.message_id || !item.contact_ig_id) return { outcome: "skipped" };
+    if (!(await windowOpen(igUserId, item.contact_ig_id))) return { outcome: "skipped" };
     await sendReaction(igUserId, token, item.contact_ig_id, p.message_id, p.reaction || "❤️");
-    return "sent";
+    return { outcome: "sent" };
   }
 
   let recipient: { comment_id: string } | { id: string };
@@ -112,7 +144,7 @@ async function processItem(
     recipient = { comment_id: item.comment_id! };
   } else {
     // DMs comuns só dentro da janela de 24h — regra da Meta
-    if (!(await windowOpen(igUserId, item.contact_ig_id))) return "skipped";
+    if (!(await windowOpen(igUserId, item.contact_ig_id))) return { outcome: "skipped" };
     recipient = { id: item.contact_ig_id! };
   }
 
@@ -130,8 +162,8 @@ async function processItem(
     message = { text: texto };
   }
 
-  await sendMessage(igUserId, token, recipient, message);
-  return "sent";
+  const enviada = await sendMessage(igUserId, token, recipient, message);
+  return { outcome: "sent", messageId: enviada.message_id, sentText: texto };
 }
 
 export async function drainQueue(): Promise<{ sent: number; skipped: number; failed: number }> {
@@ -180,9 +212,13 @@ export async function drainQueue(): Promise<{ sent: number; skipped: number; fai
       continue;
     }
     try {
-      const outcome = await processItem(item, account.ig_user_id, account.access_token);
+      const { outcome, messageId, sentText } = await processItem(
+        item,
+        account.ig_user_id,
+        account.access_token
+      );
       if (outcome === "sent") {
-        await finish(item.id, { status: "sent", sent_at: new Date() });
+        await finish(item.id, { status: "sent", sent_at: new Date(), message_id: messageId, sentText });
         result.sent++;
         await sleep(GAP_MS);
       } else {
@@ -194,7 +230,7 @@ export async function drainQueue(): Promise<{ sent: number; skipped: number; fai
       const giveUp = permanent || item.attempts >= 3;
       await finish(item.id, {
         status: giveUp ? "failed" : "pending",
-        not_before: new Date(Date.now() + 2 * 60_000),
+        retryInSeconds: 120,
         error: err instanceof Error ? err.message.slice(0, 500) : String(err),
       });
       result.failed++;

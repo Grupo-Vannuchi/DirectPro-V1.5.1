@@ -43,3 +43,6 @@ next-env.d.ts
 # materiais de venda (nao vao para o repo nem para o ZIP)
 entrega/
 .claude/
+
+# Estado interno de ferramenta de agente — nao e codigo do projeto
+/.superpowers/

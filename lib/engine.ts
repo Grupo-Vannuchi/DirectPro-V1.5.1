@@ -21,6 +21,7 @@ import {
   emailAnswerKey,
   welcomeMessageKey,
   storyReactionKey,
+  manualReplyKey,
 } from "./dedupe";
 
 // ============================================================
@@ -126,6 +127,18 @@ function findMatch(
   );
 }
 
+// O atraso vem em SEGUNDOS a partir de agora, não como instante absoluto — e a
+// conta de "agora" é feita pelo BANCO.
+//
+// Antes isto recebia um Date do relógio da aplicação. Só que quem busca o item
+// compara com `now()`, o relógio do banco. Dois relógios na mesma comparação: se
+// a aplicação estiver adiantada, o item nasce no futuro e ninguém o pega até a
+// diferença passar.
+//
+// Não é hipótese. Medido nesta máquina: 53,9 segundos de diferença, e toda
+// resposta manual ficava presa quase um minuto. Na Vercel os relógios são
+// sincronizados e a diferença é de milissegundos, e foi por isso que isso nunca
+// apareceu em produção.
 async function enqueue(item: {
   account_id: string;
   kind: QueueItem["kind"];
@@ -134,12 +147,12 @@ async function enqueue(item: {
   comment_id?: string;
   payload: Record<string, unknown>;
   dedupe_key: string;
-  not_before?: Date;
+  delaySeconds?: number;
 }): Promise<boolean> {
-  const notBefore = item.not_before ?? new Date();
+  const atraso = Math.max(0, Math.round(item.delaySeconds ?? 0));
   const rows = (await sql().query(
     `insert into queue (account_id, kind, contact_ig_id, automation_id, comment_id, payload, dedupe_key, not_before)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)
+     values ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8::int))
      on conflict (dedupe_key) do nothing
      returning id`,
     [
@@ -150,15 +163,15 @@ async function enqueue(item: {
       item.comment_id ?? null,
       JSON.stringify(item.payload),
       item.dedupe_key,
-      notBefore.toISOString(),
+      atraso,
     ]
   )) as { id: string }[];
   const inserted = rows.length > 0;
 
   // item com atraso: pede pro QStash acordar o app na hora certa
-  if (inserted && notBefore.getTime() > Date.now() + 15_000) {
+  if (inserted && atraso > 15) {
     const config = await getConfig();
-    await scheduleTick(config.app_url ?? "", (notBefore.getTime() - Date.now()) / 1000 + 5);
+    await scheduleTick(config.app_url ?? "", atraso + 5);
   }
   return inserted;
 }
@@ -353,7 +366,7 @@ async function enqueueFollowups(accountId: string, automationId: string, contact
       automation_id: automationId,
       payload: { text: f.text, button_label: f.button_label, url: f.url },
       dedupe_key: followupKey(f.id, contactIgId, dayBucket()),
-      not_before: new Date(Date.now() + f.delay_minutes * 60_000),
+      delaySeconds: f.delay_minutes * 60,
     });
   }
 }
@@ -568,4 +581,27 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   ) {
     await enqueueFollowups(account.ig_user_id, lastAuto, senderId);
   }
+}
+
+// Resposta escrita por uma pessoa no painel.
+//
+// Entra na MESMA fila das automáticas de propósito: assim ela herda a trava
+// atômica, o limite de ~190 envios/hora por conta, as novas tentativas e a
+// checagem da janela de 24h. Um caminho de envio paralelo teria que reimplementar
+// tudo isso — e erraria em algum ponto.
+//
+// O processItem já sabe tratar este caso: "dm_manual" não é comment_reply nem
+// story_reaction, então cai no caminho de DM comum com texto simples.
+export async function enqueueManualReply(
+  accountId: string,
+  contactIgId: string,
+  text: string
+): Promise<boolean> {
+  return enqueue({
+    account_id: accountId,
+    kind: "dm_manual",
+    contact_ig_id: contactIgId,
+    payload: { text },
+    dedupe_key: manualReplyKey(contactIgId, Date.now()),
+  });
 }

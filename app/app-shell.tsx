@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import AccountSwitcher, { SwitcherAccount } from "./account-switcher";
 import {
   IconHome,
+  IconSend,
   IconZap,
   IconUsers,
   IconActivity,
@@ -29,6 +30,7 @@ const NAV_GROUPS: {
   {
     label: "Gerenciar",
     items: [
+      { href: "/conversas", label: "Conversas", icon: IconSend },
       { href: "/automacoes", label: "Automações", icon: IconZap },
       { href: "/contatos", label: "Contatos", icon: IconUsers },
       { href: "/eventos", label: "Atividade", icon: IconActivity },
