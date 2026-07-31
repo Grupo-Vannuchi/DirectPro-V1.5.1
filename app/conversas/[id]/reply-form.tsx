@@ -2,6 +2,7 @@
 import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { sendReply } from "./actions";
+import { EVENTO_ENVIOU } from "./area-mensagens";
 import { input, btnPrimary, muted } from "../../ui";
 
 // Quanto esperar antes de conferir se a mensagem saiu.
@@ -38,6 +39,10 @@ export default function ReplyForm({
 
     // O formulário não se limpa sozinho, porque a ação não recria o componente.
     if (campo.current) campo.current.value = "";
+
+    // Avisa a área de mensagens para descer até o fim. Quem envia tem que ver o
+    // que enviou, mesmo que estivesse lendo o histórico no momento.
+    window.dispatchEvent(new Event(EVENTO_ENVIOU));
 
     const t = setTimeout(() => router.refresh(), CONFERIR_APOS_MS);
     return () => clearTimeout(t);

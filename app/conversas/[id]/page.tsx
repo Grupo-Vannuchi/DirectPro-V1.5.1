@@ -13,7 +13,7 @@ import { fmtDate } from "@/lib/format";
 import { muted, badgeOk, badgeNeutral } from "../../ui";
 import Avatar from "../../avatar";
 import ReplyForm from "./reply-form";
-import RolarParaFim from "./rolar-para-fim";
+import AreaMensagens from "./area-mensagens";
 import AnexoImagem from "./anexo-imagem";
 
 export const dynamic = "force-dynamic";
@@ -138,8 +138,9 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
         </span>
       </div>
 
-      {/* Só as mensagens rolam */}
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-4">
+      {/* Só as mensagens rolam. A key remonta ao trocar de conversa, o que zera
+          rolagem e aviso de mensagem nova junto. */}
+      <AreaMensagens key={id} quantidade={mensagens.length}>
         {!mensagens.length && (
           <p className={`m-auto text-sm ${muted}`}>Nenhuma mensagem nesta conversa.</p>
         )}
@@ -173,9 +174,7 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
             </div>
           );
         })}
-        {/* A `key` remonta ao trocar de conversa, e a rolagem vai de novo ao fim */}
-        <RolarParaFim key={id} />
-      </div>
+      </AreaMensagens>
 
       {/* Formulário parado no rodapé da coluna */}
       <div className="border-t border-zinc-200/80 px-4 py-3 dark:border-zinc-800">
