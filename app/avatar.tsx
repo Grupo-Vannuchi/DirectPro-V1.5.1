@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { initial } from "@/lib/initials";
 
 // Foto de perfil com fallback para a inicial — as URLs do CDN do Instagram
 // expiram depois de um tempo, então a imagem pode falhar mesmo salva no banco.
@@ -30,7 +31,7 @@ export default function Avatar({
     <span
       className={`${className} flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 font-bold text-white ${textClassName}`}
     >
-      {(name || "?").slice(0, 1).toUpperCase()}
+      {initial(name)}
     </span>
   );
 }
