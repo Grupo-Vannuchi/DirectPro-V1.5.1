@@ -4,6 +4,7 @@ import { listConversations } from "@/lib/conversations";
 import { card, muted, pageTitle } from "../ui";
 import Lista from "./lista";
 import { ColunaLista, ColunaConversa } from "./painel";
+import Atualizador from "./atualizador";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,8 @@ export default async function ConversasLayout({ children }: { children: React.Re
 
   return (
     <div className="space-y-4">
+      {/* Mantém lista e conversa em dia sem F5; só com a aba visível. */}
+      <Atualizador />
       <header>
         <h1 className={pageTitle}>Conversas</h1>
         <p className={`mt-1 text-sm ${muted}`}>
