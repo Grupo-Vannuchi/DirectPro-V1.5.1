@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { drainQueue } from "@/lib/queue-drain";
-import { refreshLongLivedToken, getUserProfile } from "@/lib/ig";
+import { refreshLongLivedToken, getUserProfile, getProfile } from "@/lib/ig";
 import { listAccounts, updateAccountToken, sql } from "@/lib/db";
 import { safeEqualSecret } from "@/lib/crypto";
 
@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
 
   let refreshed = 0;
   let profiles = 0;
+  // Contado à parte de `profiles`: uma é a foto da conta conectada, a outra a
+  // dos contatos. Somar as duas esconderia justamente o caso que quebrou.
+  let ownProfiles = 0;
   const accounts = await listAccounts();
 
   for (const account of accounts) {
@@ -42,6 +45,28 @@ export async function GET(req: NextRequest) {
           // token com menos de 24h ou erro transitório: tenta de novo amanhã
         }
       }
+    }
+
+    // A foto da PRÓPRIA conta expira igual à dos contatos, e ninguém a
+    // renovava: era gravada uma vez no OAuth e ficava lá. Semanas depois a URL
+    // morria e o avatar do painel aparecia quebrado — sem erro, sem log, e sem
+    // conserto possível a não ser reconectar a conta inteira.
+    //
+    // Foi assim que apareceu: a do install ficou 403 enquanto as 31 dos
+    // contatos carregavam, porque só elas passavam por aqui.
+    try {
+      const meu = await getProfile(token);
+      await sql().query(
+        `update accounts set
+           username = coalesce($2, username),
+           name = coalesce($3, name),
+           profile_picture_url = coalesce($4, profile_picture_url)
+         where ig_user_id = $1`,
+        [account.ig_user_id, meu.username, meu.name ?? null, meu.profile_picture_url ?? null]
+      );
+      ownProfiles++;
+    } catch {
+      // token recém-renovado às vezes demora a valer; amanhã tenta de novo
     }
 
     const contacts = (await sql().query(
@@ -71,5 +96,11 @@ export async function GET(req: NextRequest) {
   }
 
   const drained = await drainQueue();
-  return NextResponse.json({ accounts: accounts.length, refreshed, profiles, ...drained });
+  return NextResponse.json({
+    accounts: accounts.length,
+    refreshed,
+    ownProfiles,
+    profiles,
+    ...drained,
+  });
 }
