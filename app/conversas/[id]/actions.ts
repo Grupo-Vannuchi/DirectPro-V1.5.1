@@ -1,6 +1,5 @@
 "use server";
 import { revalidatePath } from "next/cache";
-import { after } from "next/server";
 import { getSelectedAccount } from "@/lib/account";
 import { enqueueManualReply } from "@/lib/engine";
 import { drainQueue } from "@/lib/queue-drain";
@@ -40,16 +39,27 @@ export async function sendReply(
   // até o cron diário das 9h — e a janela de 24h pode fechar antes disso, o que
   // faria o item ser descartado em silêncio DEPOIS de o atendente ver sucesso.
   //
-  // Vai em after() pelo mesmo motivo do webhook: a resposta da ação não espera
-  // o envio. A consequência é que a mensagem aparece na conversa na próxima
-  // carga da página, não instantaneamente.
-  after(async () => {
-    try {
-      await drainQueue();
-    } catch {
-      // a trava atômica garante que o próximo dreno recupera
-    }
-  });
+  // AGUARDA o envio, e isso é deliberado. Antes ia em after(), como no webhook.
+  // Mas os dois casos não são o mesmo: a Meta exige que o webhook responda
+  // rápido; uma pessoa que clicou "Enviar" não precisa de resposta rápida, e sim
+  // de resposta CERTA.
+  //
+  // Com after(), o revalidatePath abaixo rodava ANTES de o envio terminar, então
+  // a tela voltava dizendo "enviando…" — verdade naquele instante, mentira dois
+  // segundos depois. Sobrava ao navegador perceber sozinho, e isso falhou duas
+  // vezes em produção: o balão ficava "enviando…" até alguém dar F5, com a
+  // mensagem já entregue.
+  //
+  // Esperar custa os ~2s reais da entrega, com o botão em "Enviando…" — que é o
+  // que um aplicativo de mensagem faz. Em troca, a tela que volta já mostra o
+  // horário ou "não enviada", certa de primeira, sem depender de o JavaScript da
+  // página estar de pé.
+  try {
+    await drainQueue();
+  } catch {
+    // A trava atômica garante que o próximo dreno recupera. O item fica
+    // 'pending' e o balão mostra "enviando…", que aqui é verdade.
+  }
 
   revalidatePath(`/conversas/${contactIgId}`);
   return {};
