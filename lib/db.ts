@@ -1,12 +1,43 @@
 import "server-only";
-import { neon } from "@neondatabase/serverless";
+import postgres from "postgres";
 import { randomBytes } from "node:crypto";
 
-// Banco Postgres (Neon, provisionado pela Vercel). Acesso só no servidor —
-// a única credencial é a DATABASE_URL, que nunca chega ao navegador.
-type Sql = ReturnType<typeof neon>;
+// Banco Postgres. Acesso só no servidor — a única credencial é a DATABASE_URL,
+// que nunca chega ao navegador.
+//
+// O driver fala TCP com um pooler na frente (PgBouncer no Neon, Supavisor no
+// Supabase). Os dois rodam em MODO TRANSAÇÃO, que não suporta prepared
+// statements — daí o `prepare: false`. Sem ele o app não quebra na primeira
+// requisição, e sim sob concorrência, que é o tipo de falha mais caro de achar.
+
+// A interface é a mesma de sempre: template marcado para consulta fixa, e
+// .query(texto, params) para consulta montada. Os 73 pontos de chamada não
+// sabem qual driver está por baixo.
+type Sql = {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+  query: (text: string, params?: unknown[]) => Promise<unknown[]>;
+};
 
 let _sql: Sql | null = null;
+
+// Cada fornecedor inventa o seu parâmetro de URL: o Neon manda channel_binding,
+// o Prisma manda pgbouncer. O postgres.js não conhece nenhum dos dois e os
+// repassa ao servidor como opção de conexão, que os recusa.
+//
+// Removidos via URL, e não por regex: tirando o PRIMEIRO parâmetro, o regex
+// deixaria um "&" órfão logo depois do "?" e quebraria o resto da string.
+const PARAMS_DE_OUTROS = ["channel_binding", "pgbouncer"];
+
+function limparUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const p of PARAMS_DE_OUTROS) u.searchParams.delete(p);
+    return u.toString();
+  } catch {
+    // URL que não parseia é problema do driver reportar, não deste ajuste.
+    return url;
+  }
+}
 
 // Aceita o banco com QUALQUER prefixo de variável (DATABASE_URL, STORAGE_URL,
 // POSTGRES_URL...): o comprador não precisa acertar o "Custom Prefix" na Vercel.
@@ -30,10 +61,32 @@ export function sql(): Sql {
     const url = findDatabaseUrl();
     if (!url) {
       throw new Error(
-        "Banco não encontrado. Na Vercel: Storage > Create Database > Neon, conecte ao projeto e faça um Redeploy."
+        "Banco não encontrado. Configure a DATABASE_URL do projeto na Vercel e faça um Redeploy."
       );
     }
-    _sql = neon(url);
+    const cliente = postgres(limparUrl(url), {
+      prepare: false,
+      ssl: "require",
+      // Baixo de propósito: em serverless cada instância vive pouco e atende
+      // poucas requisições ao mesmo tempo. Pool grande aqui vira conexão ociosa
+      // segurando vaga num pooler que é compartilhado.
+      max: 3,
+      idle_timeout: 20,
+      connect_timeout: 10,
+    });
+    // A fronteira onde o tipo do driver se apaga, de propósito e num lugar só.
+    // O app monta parâmetros como `unknown[]`, que é o que ele de fato tem; o
+    // postgres.js quer os tipos dele. A conversão mora AQUI para que os 73
+    // pontos de chamada não precisem conhecer driver nenhum — é o que permite
+    // trocar de driver de novo um dia mexendo só neste arquivo.
+    _sql = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) =>
+        cliente(strings, ...(values as postgres.ParameterOrFragment<never>[])),
+      {
+        query: (text: string, params?: unknown[]) =>
+          cliente.unsafe(text, (params ?? []) as postgres.ParameterOrJSON<never>[]),
+      }
+    );
   }
   return _sql;
 }

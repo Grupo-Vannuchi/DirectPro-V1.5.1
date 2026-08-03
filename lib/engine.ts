@@ -54,10 +54,23 @@ export type MessagingEvent = {
 
 export async function logEvent(accountId: string | null, type: string, payload: unknown) {
   await ensureSchema();
+  // O payload vai CRU para uma coluna jsonb — sem JSON.stringify.
+  //
+  // Isto já foi `JSON.stringify(payload)` e estava certo no driver HTTP, que só
+  // aceitava texto. O driver por TCP tipa o parâmetro como json sozinho, então a
+  // string pré-serializada era gravada como ESCALAR json — o texto `{"a":1}` em
+  // vez do objeto {a:1}. Nada acusava: o insert passava, a coluna aceitava.
+  //
+  // O estrago aparecia depois, na leitura: `payload->'sender'->>'id'` devolvia
+  // nulo em escalar, derrubando o inbox e os filtros de /eventos, e o jsonb_set
+  // do dreno falhava com "cannot set path in scalar".
+  //
+  // Cru funciona para toda forma que este parâmetro recebe — objeto, array,
+  // string, número —, verificado uma a uma contra o banco.
   await sql().query(`insert into events (account_id, type, payload) values ($1, $2, $3)`, [
     accountId,
     type,
-    JSON.stringify(payload),
+    payload,
   ]);
 }
 
@@ -161,7 +174,10 @@ async function enqueue(item: {
       item.contact_ig_id ?? null,
       item.automation_id ?? null,
       item.comment_id ?? null,
-      JSON.stringify(item.payload),
+      // Cru, não JSON.stringify — mesmo motivo explicado em logEvent. Aqui a
+      // consequência seria mais visível: o dreno faz jsonb_set neste payload
+      // para registrar o texto entregue, e sobre escalar isso é erro duro.
+      item.payload,
       item.dedupe_key,
       atraso,
     ]
