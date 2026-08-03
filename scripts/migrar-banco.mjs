@@ -35,7 +35,40 @@ if (new URL(origemUrl).host === new URL(destinoUrl).host) {
   process.exit(1);
 }
 
-const opcoes = { prepare: false, ssl: "require", max: 1 };
+// Data e hora passam como TEXTO, sem virar Date.
+//
+// O padrão do driver é converter timestamptz em Date do JavaScript, que só tem
+// precisão de milissegundo. O Postgres guarda microssegundo. Numa cópia isso
+// significa perder os últimos três dígitos de cada horário — 10:24:59.827611
+// chega do outro lado como 10:24:59.827, calado.
+//
+// Quase nunca muda comportamento: a ordenação da conversa e a janela de 24h não
+// dependem de microssegundo. Mas é degradação sem aviso, e uma migração que
+// altera dado sem dizer não é uma migração conferível.
+//
+// O app CONTINUA recebendo Date normalmente — isto vale só para este script.
+const SEM_CONVERTER_DATA = {
+  date: {
+    to: 1184,
+    from: [1082, 1114, 1184], // date, timestamp, timestamptz
+    serialize: (x) => x,
+    parse: (x) => x,
+  },
+};
+
+// Os dois servidores vêm com ajustes diferentes de fábrica — o Neon em GMT com
+// extra_float_digits=1, o Supabase em UTC com 0. Isso muda como o Postgres
+// RENDERIZA valor em texto, e a conferência final compara exatamente isso.
+// Fixados iguais dos dois lados, a comparação fala de dado, não de formatação.
+const MESMA_FORMATACAO = { TimeZone: "UTC", DateStyle: "ISO, MDY", extra_float_digits: "3" };
+
+const opcoes = {
+  prepare: false,
+  ssl: "require",
+  max: 1,
+  types: SEM_CONVERTER_DATA,
+  connection: MESMA_FORMATACAO,
+};
 const origem = postgres(limparUrl(origemUrl), opcoes);
 const destino = postgres(limparUrl(destinoUrl), opcoes);
 
@@ -88,14 +121,15 @@ console.log(`destino: ${new URL(destinoUrl).host}\n`);
 // vivo. Destino à frente da origem só acontece se ele já for o banco de
 // produção.
 {
-  const [[o], [d]] = await Promise.all([
-    origem.unsafe(`select max(created_at) as t from events`),
-    destino.unsafe(`select max(created_at) as t from events`),
-  ]);
+  // Em epoch, e não no texto da data: agora que timestamptz volta como string,
+  // comparar texto dependeria de os dois servidores formatarem igual — e eles
+  // não formatam. Número não tem esse problema.
+  const consulta = `select extract(epoch from max(created_at))::float8 as t from events`;
+  const [[o], [d]] = await Promise.all([origem.unsafe(consulta), destino.unsafe(consulta)]);
   if (o.t && d.t && d.t > o.t) {
-    const atraso = Math.round((d.t - o.t) / 1000);
+    const atraso = Math.round(d.t - o.t);
     console.error(
-      `ABORTADO: o destino tem evento ${atraso}s mais NOVO que a origem.\n` +
+      `ABORTADO: o destino tem evento ${atraso.toFixed(0)}s mais NOVO que a origem.\n` +
         `Isso significa que o destino já é o banco em produção. Copiar agora\n` +
         `sobrescreveria dado novo com dado velho, sem volta.`
     );
@@ -194,6 +228,27 @@ if (nav.total > 0 && navegaveis === 0) {
   console.log("  ESCALAR — os payloads foram corrompidos na cópia");
 } else if (nav.total > 0) {
   console.log("  ok");
+}
+
+// A conferência mais forte, e a razão de ela existir: contagem igual não é
+// conteúdo igual. Converte cada linha inteira em texto canônico, ordena e
+// resume num md5. Um único caractere diferente em uma única coluna muda o
+// resumo — inclusive um microssegundo perdido numa data.
+//
+// Foi assim que se descobriu que timestamptz estava chegando truncado no
+// destino: as contagens batiam, a config batia, o jsonb navegava, e mesmo assim
+// seis das sete tabelas divergiam.
+console.log("\nconteudo linha a linha (contagem igual nao e conteudo igual):");
+for (const { nome: tabela } of TABELAS) {
+  const consulta =
+    `select md5(coalesce(string_agg(x::text, chr(10) order by x::text), ''))::text as h ` +
+    `from ${tabela} x`;
+  const [[a], [b]] = await Promise.all([origem.unsafe(consulta), destino.unsafe(consulta)]);
+  const ok = a.h === b.h;
+  if (!ok) divergiu = true;
+  console.log(
+    `  ${tabela.padEnd(14)} ${ok ? "identico" : "DIVERGE "}  ${a.h.slice(0, 12)}${ok ? "" : `  vs  ${b.h.slice(0, 12)}`}`
+  );
 }
 
 await Promise.all([origem.end({ timeout: 5 }), destino.end({ timeout: 5 })]);
