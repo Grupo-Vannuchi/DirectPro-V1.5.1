@@ -56,6 +56,29 @@ function findDatabaseUrl(): string | undefined {
   return candidates[0]?.[1];
 }
 
+// O ensureSchema roda em TODA requisição e é idempotente de propósito: todo
+// `create ... if not exists` e `add column if not exists` faz o Postgres emitir
+// um NOTICE dizendo que já existe. São ~36 por requisição.
+//
+// O driver HTTP anterior descartava notices em silêncio. O postgres.js os
+// imprime no console, e o efeito nos logs da Vercel foi imediato: uma chamada ao
+// cron virou 36 blocos de "already exists, skipping". Isso não é erro, mas
+// ENTERRA os erros de verdade — que é uma forma de quebrar o log sem quebrar o
+// app.
+//
+// Filtra só os dois códigos que a idempotência produz. Qualquer outro notice
+// continua aparecendo: eles podem significar algo, e engolir tudo trocaria um
+// problema por outro.
+const RUIDO_ESPERADO = new Set([
+  "42P07", // relation already exists
+  "42701", // column already exists
+]);
+
+function engoleRuidoDoEnsureSchema(aviso: { code?: string; message?: string }): void {
+  if (RUIDO_ESPERADO.has(aviso.code ?? "")) return;
+  console.warn(`[postgres] ${aviso.code}: ${aviso.message}`);
+}
+
 export function sql(): Sql {
   if (!_sql) {
     const url = findDatabaseUrl();
@@ -67,6 +90,7 @@ export function sql(): Sql {
     const cliente = postgres(limparUrl(url), {
       prepare: false,
       ssl: "require",
+      onnotice: engoleRuidoDoEnsureSchema,
       // Baixo de propósito: em serverless cada instância vive pouco e atende
       // poucas requisições ao mesmo tempo. Pool grande aqui vira conexão ociosa
       // segurando vaga num pooler que é compartilhado.
