@@ -77,6 +77,33 @@ const TABELAS = [
 console.log(`origem : ${new URL(origemUrl).host}`);
 console.log(`destino: ${new URL(destinoUrl).host}\n`);
 
+// TRAVA CONTRA RODAR DEPOIS DA VIRADA.
+//
+// A cópia sobrescreve, o que é certo ANTES da virada e desastroso DEPOIS: com o
+// app já apontando para o destino, rodar isto de novo substituiria os dados
+// novos pelos do banco antigo, que a essa altura está parado. E não haveria
+// desfazer — o `on conflict do update` não guarda o que passou por cima.
+//
+// events só cresce, então o evento mais recente de cada lado diz quem está
+// vivo. Destino à frente da origem só acontece se ele já for o banco de
+// produção.
+{
+  const [[o], [d]] = await Promise.all([
+    origem.unsafe(`select max(created_at) as t from events`),
+    destino.unsafe(`select max(created_at) as t from events`),
+  ]);
+  if (o.t && d.t && d.t > o.t) {
+    const atraso = Math.round((d.t - o.t) / 1000);
+    console.error(
+      `ABORTADO: o destino tem evento ${atraso}s mais NOVO que a origem.\n` +
+        `Isso significa que o destino já é o banco em produção. Copiar agora\n` +
+        `sobrescreveria dado novo com dado velho, sem volta.`
+    );
+    await Promise.all([origem.end({ timeout: 5 }), destino.end({ timeout: 5 })]);
+    process.exit(1);
+  }
+}
+
 for (const { nome: tabela, chave, apenasInsere } of TABELAS) {
   const linhas = await origem.unsafe(`select * from ${tabela}`);
   if (!linhas.length) {
