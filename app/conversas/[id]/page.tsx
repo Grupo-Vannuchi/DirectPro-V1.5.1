@@ -15,6 +15,7 @@ import Avatar from "../../avatar";
 import ReplyForm from "./reply-form";
 import AreaMensagens from "./area-mensagens";
 import AnexoImagem from "./anexo-imagem";
+import Visto from "./visto";
 
 export const dynamic = "force-dynamic";
 
@@ -113,6 +114,8 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
 
   return (
     <>
+      <Visto contactIgId={id} quantidade={mensagens.length} />
+
       {/* Cabeçalho parado no topo da coluna */}
       <div className="flex items-center gap-3 border-b border-zinc-200/80 px-4 py-3 dark:border-zinc-800">
         {/* No desktop a lista está do lado; este atalho só serve no celular. */}
