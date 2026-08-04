@@ -45,7 +45,5 @@ entrega/
 .claude/
 
 # Estado interno de ferramenta de agente — nao e codigo do projeto
+# (tambem cobre o rascunho de execucao de planos do superpowers)
 /.superpowers/
-
-# Rascunho de execucao de planos (superpowers) — nao versionado
-.superpowers/

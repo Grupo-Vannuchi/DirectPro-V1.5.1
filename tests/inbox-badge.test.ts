@@ -25,4 +25,10 @@ describe("badgeDaConversa", () => {
     // nunca deve virar badge.
     expect(badgeDaConversa({ naoLidas: -1, semResposta: false })).toBe("nenhum");
   });
+
+  it("mostra o ponto mesmo com contagem negativa, se está sem resposta", () => {
+    // A mesma defesa do caso acima, mas combinada com semResposta: o número
+    // negativo não deve mascarar o ponto que a segunda condição pede.
+    expect(badgeDaConversa({ naoLidas: -1, semResposta: true })).toBe("ponto");
+  });
 });

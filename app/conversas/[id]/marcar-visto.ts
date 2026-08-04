@@ -1,4 +1,5 @@
 "use server";
+import { revalidatePath } from "next/cache";
 import { getSelectedAccount } from "@/lib/account";
 import { sql, ensureSchema } from "@/lib/db";
 
@@ -15,8 +16,30 @@ export async function marcarVisto(contactIgId: string): Promise<void> {
   await ensureSchema();
   const account = await getSelectedAccount();
   if (!account) return;
-  await sql().query(
-    `update contacts set last_seen_at = now() where account_id = $1 and ig_id = $2`,
+  // `returning` é o que torna o resultado confiável: sem ele, o postgres.js
+  // devolve um array SEMPRE vazio (o afetado vai só em `.count`, não em
+  // `.length`) — testado direto contra o banco antes de escrever esta
+  // condição. Com `returning ig_id`, `.length` reflete de verdade quantas
+  // linhas o update tocou.
+  const r = await sql().query(
+    `update contacts set last_seen_at = now()
+     where account_id = $1 and ig_id = $2
+     returning ig_id`,
     [account.ig_user_id, contactIgId]
   );
+  if (!Array.isArray(r) || r.length === 0) {
+    // Sem linha em contacts, o badge dessa conversa nunca se apaga. Não é
+    // erro fatal, mas precisa aparecer em algum lugar: sem isso o sintoma
+    // seria uma conversa eternamente "não lida" e nenhuma pista do motivo.
+    console.warn(
+      `[marcarVisto] nenhuma linha em contacts para account_id=${account.ig_user_id} ig_id=${contactIgId}`
+    );
+  }
+
+  // O "layout" é obrigatório aqui, não redundante: quem renderiza a lista de
+  // conversas é app/conversas/layout.tsx, não esta página. Layout do App
+  // Router não se refaz sozinho ao navegar entre rotas irmãs, então sem
+  // revalidar o segmento de layout explicitamente o badge só sumiria no
+  // próximo tique do Atualizador (30s) ou num F5 — não ao abrir a conversa.
+  revalidatePath("/conversas", "layout");
 }

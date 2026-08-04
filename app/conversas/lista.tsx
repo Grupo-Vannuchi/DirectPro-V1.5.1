@@ -102,6 +102,7 @@ export default function Lista({
                       e evita que as duas marcas disputem o mesmo canto. */}
                   {marca === "contagem" && (
                     <span
+                      role="img"
                       className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-indigo-500 px-1.5 text-[11px] font-semibold tabular-nums text-white"
                       aria-label={`${c.nao_lidas} ${c.nao_lidas === 1 ? "mensagem não lida" : "mensagens não lidas"}`}
                     >
@@ -110,6 +111,7 @@ export default function Lista({
                   )}
                   {marca === "ponto" && (
                     <span
+                      role="img"
                       className="ml-auto h-2 w-2 shrink-0 rounded-full bg-indigo-400/70"
                       aria-label="Ainda sem resposta"
                     />

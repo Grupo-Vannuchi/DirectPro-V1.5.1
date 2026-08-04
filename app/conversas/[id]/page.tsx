@@ -114,7 +114,7 @@ export default async function ConversaPage({ params }: { params: Promise<{ id: s
 
   return (
     <>
-      <Visto contactIgId={id} quantidade={mensagens.length} />
+      <Visto contactIgId={id} ultimaMensagemEm={mensagens.at(-1)?.at.getTime() ?? 0} />
 
       {/* Cabeçalho parado no topo da coluna */}
       <div className="flex items-center gap-3 border-b border-zinc-200/80 px-4 py-3 dark:border-zinc-800">

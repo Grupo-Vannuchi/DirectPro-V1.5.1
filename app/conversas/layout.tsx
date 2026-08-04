@@ -14,10 +14,11 @@ export const dynamic = "force-dynamic";
 // lista aqui, trocar de conversa não a desmonta: a rolagem fica onde estava e só
 // a coluna da direita muda. Era isso que obrigava a voltar de tela toda vez.
 //
-// O preço é o outro lado da mesma moeda: a lista NÃO se atualiza sozinha. Depois
-// de enviar uma mensagem, o horário dela continua o de antes até um
-// recarregamento. Decisão consciente da v1 — atualizar sozinha custaria uma
-// consulta por atendente a cada poucos segundos.
+// Quem mantém essa lista em dia é outra coisa: o `Atualizador` (abaixo) refaz
+// a rota a cada 30s com a aba visível, e `marcarVisto` dispara
+// `revalidatePath("/conversas", "layout")` assim que a conversa é aberta — daí
+// o segundo argumento "layout", já que é este arquivo, e não a página, quem
+// desenha a lista. As duas coisas juntas é que fazem o badge sumir sem F5.
 export default async function ConversasLayout({ children }: { children: React.ReactNode }) {
   await ensureSchema();
   const account = await getSelectedAccount();
