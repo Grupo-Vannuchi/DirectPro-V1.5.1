@@ -1,6 +1,6 @@
 "use server";
 import { getSelectedAccount } from "@/lib/account";
-import { sql, ensureSchema } from "@/lib/db";
+import { sql } from "@/lib/db";
 
 // Registra que esta conversa foi vista agora.
 //
@@ -10,9 +10,17 @@ import { sql, ensureSchema } from "@/lib/db";
 // durante outro teste. Gravar isto na renderização marcaria como lida toda
 // conversa que passasse perto do mouse, e o sintoma seria "às vezes as não
 // lidas somem sozinhas": impossível de reproduzir sob demanda.
+//
+// SEM ensureSchema aqui, de propósito. Ele roda ~40 instruções DDL, e esta ação
+// dispara a cada conversa aberta — era a parte mais cara de um ciclo que, num
+// laço de refresh, esgotou o pool de conexões e devolveu 504 em produção.
+//
+// Não é atalho: para esta ação existir, a página da conversa já renderizou, e
+// ela chama ensureSchema. Se o schema não existisse, não haveria tela para
+// clicar. E o schema é estado do BANCO, não da instância — quem já foi criado
+// continua criado, mesmo numa lambda que nunca rodou o ensureSchema.
 export async function marcarVisto(contactIgId: string): Promise<void> {
   if (!/^\d{1,32}$/.test(contactIgId)) return;
-  await ensureSchema();
   const account = await getSelectedAccount();
   if (!account) return;
   // `returning` é o que torna o resultado confiável: sem ele, o postgres.js
