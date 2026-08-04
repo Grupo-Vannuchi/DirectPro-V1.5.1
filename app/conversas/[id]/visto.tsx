@@ -1,5 +1,6 @@
 "use client";
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { marcarVisto } from "./marcar-visto";
 
 // Avisa o servidor que esta conversa foi aberta.
@@ -23,11 +24,30 @@ export default function Visto({
   contactIgId: string;
   ultimaMensagemEm: number;
 }) {
+  const router = useRouter();
+
   useEffect(() => {
-    // Falha aqui não merece tela de erro: o pior caso é a conversa continuar
-    // marcada como não lida, e a próxima abertura resolve.
-    void marcarVisto(contactIgId).catch(() => {});
-  }, [contactIgId, ultimaMensagemEm]);
+    // O refresh depois da gravação é o que faz o badge sumir da lista.
+    //
+    // Sem ele o recurso parece quebrado: medido, a gravação acontecia e a lista
+    // continuava mostrando "26" indefinidamente. A causa é onde a lista mora —
+    // no LAYOUT, para sobreviver à troca de conversa —, e layout não é refeito
+    // em navegação pelo cliente.
+    //
+    // revalidatePath não resolve aqui: o layout é `force-dynamic`, então não há
+    // cache de servidor para invalidar. Quem realmente refaz a árvore é o
+    // router.refresh(), o mesmo que o Atualizador usa a cada 30s.
+    //
+    // Não entra em laço: o refresh não muda `contactIgId` nem
+    // `ultimaMensagemEm`, então o efeito não redispara.
+    //
+    // Falha na gravação não merece tela de erro — o pior caso é a conversa
+    // continuar marcada, e a próxima abertura resolve. Por isso o refresh só
+    // acontece quando a gravação deu certo.
+    void marcarVisto(contactIgId)
+      .then(() => router.refresh())
+      .catch(() => {});
+  }, [contactIgId, ultimaMensagemEm, router]);
 
   return null;
 }

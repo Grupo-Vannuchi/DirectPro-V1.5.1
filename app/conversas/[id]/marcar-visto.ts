@@ -1,5 +1,4 @@
 "use server";
-import { revalidatePath } from "next/cache";
 import { getSelectedAccount } from "@/lib/account";
 import { sql, ensureSchema } from "@/lib/db";
 
@@ -36,10 +35,12 @@ export async function marcarVisto(contactIgId: string): Promise<void> {
     );
   }
 
-  // O "layout" é obrigatório aqui, não redundante: quem renderiza a lista de
-  // conversas é app/conversas/layout.tsx, não esta página. Layout do App
-  // Router não se refaz sozinho ao navegar entre rotas irmãs, então sem
-  // revalidar o segmento de layout explicitamente o badge só sumiria no
-  // próximo tique do Atualizador (30s) ou num F5 — não ao abrir a conversa.
-  revalidatePath("/conversas", "layout");
+  // Quem faz o badge sumir da lista é o router.refresh() do lado do cliente,
+  // em visto.tsx — não uma revalidação daqui.
+  //
+  // Isto já foi `revalidatePath("/conversas", "layout")` e NÃO funcionava:
+  // medido contra build de produção, a gravação acontecia e a lista continuava
+  // mostrando "26" indefinidamente. O motivo é que o layout de /conversas é
+  // `force-dynamic`, então não existe cache de servidor para invalidar — o que
+  // precisa ser refeito é a árvore que o navegador já tem na mão.
 }
