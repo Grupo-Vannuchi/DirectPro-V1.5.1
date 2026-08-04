@@ -232,9 +232,15 @@ export async function listConversations(accountId: string, limite = 50) {
             (select count(*)::int from recebidas r
               where r.cid = t.cid
                 and r.at > coalesce(c.last_seen_at, 'epoch'::timestamptz)) as nao_lidas,
-            -- A comparação usa max() dos dois lados: "a última palavra foi
-            -- dela". Conversa sem nenhum envio também conta, por isso o coalesce.
-            ((select max(r.at) from recebidas r where r.cid = t.cid) >
+            -- "A última palavra foi dela". Os DOIS lados precisam de coalesce:
+            -- em SQL, `NULL > qualquer coisa` devolve NULL, não false — e o tipo
+            -- declarado abaixo é boolean não-nulo. Sem o coalesce da esquerda, a
+            -- conversa em que a conta falou e a pessoa nunca respondeu (automação
+            -- disparada por comentário) devolveria NULL num campo que promete
+            -- boolean. Com os dois em 'epoch', esse caso vira epoch > epoch =
+            -- false, que é o certo: sem nada recebido não há última palavra dela.
+            (coalesce((select max(r.at) from recebidas r where r.cid = t.cid),
+                      'epoch'::timestamptz) >
              coalesce((select max(s.at) from enviadas s where s.cid = t.cid),
                       'epoch'::timestamptz)) as sem_resposta
      from trocas t
