@@ -1,7 +1,20 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { marcarVisto } from "./marcar-visto";
+
+// A trava mora no MÓDULO, não no componente, e essa distinção é a correção.
+//
+// Um `useRef` zera quando o componente remonta — e remontar é exatamente o que
+// se suspeita que o refresh provocava. A trava seria reiniciada a cada volta do
+// laço e não travaria nada. Estado de módulo sobrevive a remontagem, então a
+// conversa é marcada no máximo uma vez por aba, aconteça o que acontecer com a
+// árvore do React.
+//
+// Cresce com o número de conversas abertas na aba: dezenas de strings curtas.
+// Some quando a página é recarregada, o que é o comportamento certo — aí é uma
+// sessão nova de verdade.
+const jaMarcadas = new Set<string>();
 
 // Avisa o servidor que esta conversa foi aberta, e pede a lista de novo para o
 // badge sumir.
@@ -27,11 +40,9 @@ import { marcarVisto } from "./marcar-visto";
 // Conversa já vista ou apenas sem resposta não mudava nada, não remontava, e
 // parecia funcionar — o que fez o defeito passar por toda a verificação.
 //
-// A trava é um ref, não uma dependência: `ultimaMarcada` sobrevive a
-// re-renderização e a remontagem de efeito, então a ação sai no máximo UMA vez
-// por (conversa, última mensagem). Se o React reexecutar o efeito mil vezes, o
-// servidor é chamado uma. Isso torna a cadeia impossível por construção, em vez
-// de depender de eu acertar o raciocínio sobre identidade de dependência.
+// A trava (`jaMarcadas`, acima) torna a cadeia impossível por construção, em vez
+// de depender de eu acertar o raciocínio sobre identidade de dependência de
+// efeito — que foi exatamente onde eu errei.
 export default function Visto({
   contactIgId,
   ultimaMensagemEm,
@@ -40,17 +51,14 @@ export default function Visto({
   ultimaMensagemEm: number;
 }) {
   const router = useRouter();
-  // Vazio, não `null`: a chave é sempre string, e comparar com string evita um
-  // caso a menos de "primeira vez" para pensar.
-  const ultimaMarcada = useRef("");
 
   useEffect(() => {
     // A chave inclui a última mensagem para que mensagem nova chegando com a
     // conversa aberta seja marcada como vista também — sem isso, o que chegasse
     // enquanto a pessoa lê contaria como não lido ao sair.
     const chave = `${contactIgId}:${ultimaMensagemEm}`;
-    if (ultimaMarcada.current === chave) return;
-    ultimaMarcada.current = chave;
+    if (jaMarcadas.has(chave)) return;
+    jaMarcadas.add(chave);
 
     // Falha na gravação não merece tela de erro: o pior caso é a conversa
     // continuar marcada como não lida, e a próxima abertura resolve. Por isso o
