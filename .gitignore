@@ -46,3 +46,6 @@ entrega/
 
 # Estado interno de ferramenta de agente — nao e codigo do projeto
 /.superpowers/
+
+# Rascunho de execucao de planos (superpowers) — nao versionado
+.superpowers/
