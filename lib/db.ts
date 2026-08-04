@@ -368,6 +368,13 @@ const DDL = [
   // Filtro "de qual post veio" em /eventos: sem este índice de expressão, cada
   // filtragem varre a tabela inteira.
   `create index if not exists events_media_idx on events ((payload->'media'->>'id'))`,
+  // Quando esta conversa foi aberta pela última vez. Alimenta a contagem de não
+  // lidas da lista. Fica em contacts porque a chave já é (account_id, ig_id),
+  // que é exatamente o escopo de "esta conversa desta conta".
+  //
+  // Nulo em contato nunca aberto, e nesse caso toda mensagem recebida conta como
+  // não lida — que é o certo para quem chegou agora.
+  `alter table contacts add column if not exists last_seen_at timestamptz`,
 ];
 
 type SqlClient = ReturnType<typeof sql>;

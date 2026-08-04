@@ -87,25 +87,55 @@ export function mergeMessages(
 const TIPOS_RECEBIDOS = ["message", "story_reply", "quick_reply"];
 
 // Lista de conversas: uma linha por pessoa, ordenada pela última troca.
+//
+// Devolve três grandezas por conversa:
+//   total         todas as trocas, como antes
+//   nao_lidas     recebidas depois da última vez que a conversa foi aberta
+//   sem_resposta  a última mensagem foi da pessoa (SEM considerar a janela)
+//
+// A janela de 24h NÃO entra aqui, e isso é deliberado: ela depende da hora atual
+// e envelheceria dentro do resultado. Uma conversa cuja janela fecha às 14h03
+// continuaria marcada até a próxima consulta. Quem aplica a janela é a lista, no
+// componente, onde `windowState` já é calculado a cada renderização e expira
+// sozinho.
+//
+// Que a janela precise entrar em algum lugar é medido, não estético: sem ela, 32
+// das 34 conversas ficam marcadas, porque fora da janela a Meta recusa o envio e
+// ninguém nunca respondeu. Com ela, sobram 8 — as que dá para atender.
 export async function listConversations(accountId: string, limite = 50) {
   return (await sql().query(
-    `with trocas as (
+    `with recebidas as (
        select e.payload->'sender'->>'id' as cid, e.created_at as at
        from events e
        where e.account_id = $1 and e.type = any($2::text[])
-       union all
-       select e.payload->'recipient'->>'id', e.created_at
+     ),
+     enviadas as (
+       select e.payload->'recipient'->>'id' as cid, e.created_at as at
        from events e
        where e.account_id = $1 and e.type = 'message_sent'
+     ),
+     trocas as (
+       select cid, at from recebidas
+       union all
+       select cid, at from enviadas
      )
      select t.cid as ig_id,
             max(t.at) as last_at,
             count(*)::int as total,
-            c.username, c.name, c.profile_pic, c.last_reply_at
+            c.username, c.name, c.profile_pic, c.last_reply_at,
+            -- Sem last_seen_at (nunca aberta), tudo que chegou conta.
+            (select count(*)::int from recebidas r
+              where r.cid = t.cid
+                and r.at > coalesce(c.last_seen_at, 'epoch'::timestamptz)) as nao_lidas,
+            -- A comparação usa max() dos dois lados: "a última palavra foi
+            -- dela". Conversa sem nenhum envio também conta, por isso o coalesce.
+            ((select max(r.at) from recebidas r where r.cid = t.cid) >
+             coalesce((select max(s.at) from enviadas s where s.cid = t.cid),
+                      'epoch'::timestamptz)) as sem_resposta
      from trocas t
      left join contacts c on c.account_id = $1 and c.ig_id = t.cid
      where t.cid is not null
-     group by t.cid, c.username, c.name, c.profile_pic, c.last_reply_at
+     group by t.cid, c.username, c.name, c.profile_pic, c.last_reply_at, c.last_seen_at
      order by last_at desc
      limit $3`,
     [accountId, TIPOS_RECEBIDOS, limite]
@@ -117,6 +147,8 @@ export async function listConversations(accountId: string, limite = 50) {
     name: string | null;
     profile_pic: string | null;
     last_reply_at: Date | null;
+    nao_lidas: number;
+    sem_resposta: boolean;
   }[];
 }
 
