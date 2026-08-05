@@ -57,11 +57,25 @@ projeto já trata `jsonb` bem.
 | tipo | campos | comportamento |
 |---|---|---|
 | `resposta_publica` | `textos: string[]` | enfileira |
-| `dm` | `texto`, `botao_label?`, `url?` | enfileira |
+| `dm` | `texto`, `botao_label?`, `url?` | enfileira, e **espera** quando tem `botao_label` e não tem `url` |
 | `esperar` | `minutos` | enfileira |
 | `reagir_story` | `emoji` | enfileira |
 | `pedir_follow` | `texto`, `botao_label` | **espera** |
 | `pedir_email` | `texto` | **espera** |
+
+O caso da `dm` não é exceção: um passo espera resposta quando **pede** alguma
+coisa. `dm` com rótulo de botão e sem url é uma resposta rápida, e resposta
+rápida existe para ser tocada; com url é botão de link — a pessoa abre e a vida
+segue, sem nada para esperar.
+
+Sem isso a lista não conseguiria dizer o que o fluxo antigo fazia: a DM de
+boas-vindas saía com um botão de resposta rápida e **só depois do toque** o fluxo
+ia para o portão de follow. Numa lista sem esse conceito, o executor corre do
+índice 0 até o portão e consulta a Meta antes de a pessoa ter engajado — gastando
+chamada de API com quem nunca respondeu, e perdendo o degrau que o toque era.
+
+A distinção não foi inventada para isso: é exatamente como o formulário já grava
+— boas-vindas com rótulo e sem url, link com rótulo e com url.
 
 O gatilho fica **fora** da lista, nas colunas que já existem (`triggers`,
 `keywords`, `match_type`, `media_id`). Ele não é um passo: é o que faz a lista
@@ -94,7 +108,11 @@ lista acabou             → limpa o cursor
 ```
 
 Quando a pessoa responde, o motor lê o cursor, resolve aquele passo — confere se
-já segue, valida o e-mail — e retoma **do passo seguinte**.
+já segue, valida o e-mail — e retoma **do passo seguinte**. A exceção é o
+`pedir_follow`: dele se retoma **dele mesmo**, para a consulta à Meta acontecer
+de novo. O portão só é portão se cada tentativa reconsultar — retomando do
+seguinte, bastaria mandar "ok" para pular o passo e receber o link sem nunca ter
+seguido.
 
 ### O que o interpretador faz quando a lista está errada
 

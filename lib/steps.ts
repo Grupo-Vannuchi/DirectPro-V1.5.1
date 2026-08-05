@@ -17,8 +17,19 @@ export type Passo =
   | { tipo: "pedir_follow"; texto: string; botao_label: string }
   | { tipo: "pedir_email"; texto: string };
 
-// Passos que PARAM o fluxo: mandam o pedido e esperam a pessoa responder.
-const ESPERAM = new Set(["pedir_follow", "pedir_email"]);
+// Um passo espera resposta quando ele PEDE alguma coisa.
+//
+// `dm` entra nessa conta quando tem rótulo de botão e não tem url: isso é uma
+// resposta rápida, e resposta rápida existe para ser tocada. Com url é botão de
+// link — a pessoa abre e a vida segue, sem nada para esperar.
+//
+// A distinção não foi inventada aqui: é exatamente como o formulário já grava,
+// boas-vindas com rótulo e sem url, link com rótulo e com url.
+function esperaResposta(p: Passo): boolean {
+  if (p.tipo === "pedir_follow" || p.tipo === "pedir_email") return true;
+  if (p.tipo === "dm") return Boolean(p.botao_label) && !p.url;
+  return false;
+}
 
 export type AcaoEnfileirar = {
   passo: Passo;
@@ -98,7 +109,7 @@ export function interpretar(passos: unknown, deIndice: number): Resultado {
 
     r.enfileirar.push({ passo, indice: i, atrasoSegundos });
 
-    if (ESPERAM.has(passo.tipo)) {
+    if (esperaResposta(passo)) {
       r.pararEm = i;
       return r;
     }

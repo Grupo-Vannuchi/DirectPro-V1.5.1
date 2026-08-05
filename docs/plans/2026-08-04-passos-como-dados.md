@@ -97,6 +97,46 @@ describe("interpretar", () => {
     expect(r.pararEm).toBe(1);
   });
 
+  it("dm com botão e sem url é resposta rápida: enfileira e para", () => {
+    // O fluxo antigo mandava as boas-vindas com botão e só seguia depois do
+    // toque. Sem isto, o portão de follow consultaria a Meta antes de a pessoa
+    // ter engajado.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi", botao_label: "quero!" },
+        { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0]);
+    expect(r.pararEm).toBe(0);
+  });
+
+  it("dm com botão E url é botão de link: não para", () => {
+    // A pessoa abre o link e a vida segue — não há toque para esperar.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "o link", botao_label: "abrir", url: "https://x.y" },
+        { tipo: "dm", texto: "depois" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
+  it("dm sem botão não para", () => {
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi" },
+        { tipo: "dm", texto: "tchau" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
   it("retoma do índice pedido, sem repetir o que já saiu", () => {
     const r = interpretar(
       [
@@ -210,8 +250,19 @@ export type Passo =
   | { tipo: "pedir_follow"; texto: string; botao_label: string }
   | { tipo: "pedir_email"; texto: string };
 
-// Passos que PARAM o fluxo: mandam o pedido e esperam a pessoa responder.
-const ESPERAM = new Set(["pedir_follow", "pedir_email"]);
+// Um passo espera resposta quando ele PEDE alguma coisa.
+//
+// `dm` entra nessa conta quando tem rótulo de botão e não tem url: isso é uma
+// resposta rápida, e resposta rápida existe para ser tocada. Com url é botão de
+// link — a pessoa abre e a vida segue, sem nada para esperar.
+//
+// A distinção não foi inventada aqui: é exatamente como o formulário já grava,
+// boas-vindas com rótulo e sem url, link com rótulo e com url.
+function esperaResposta(p: Passo): boolean {
+  if (p.tipo === "pedir_follow" || p.tipo === "pedir_email") return true;
+  if (p.tipo === "dm") return Boolean(p.botao_label) && !p.url;
+  return false;
+}
 
 export type AcaoEnfileirar = {
   passo: Passo;
@@ -291,7 +342,7 @@ export function interpretar(passos: unknown, deIndice: number): Resultado {
 
     r.enfileirar.push({ passo, indice: i, atrasoSegundos });
 
-    if (ESPERAM.has(passo.tipo)) {
+    if (esperaResposta(passo)) {
       r.pararEm = i;
       return r;
     }
@@ -307,7 +358,7 @@ export function interpretar(passos: unknown, deIndice: number): Resultado {
 npx vitest run tests/steps.test.ts
 ```
 
-Esperado: 10 testes passando.
+Esperado: 13 testes passando.
 
 - [ ] **Passo 5: Verificar e commitar**
 
@@ -691,7 +742,11 @@ async function executarFluxo(
     if (p.tipo === "pedir_follow") {
       // O portão é o único passo que consulta a Meta antes de decidir.
       const passou = await resolverFollow(account, auto, contactIgId, p, acao.indice);
-      if (passou) continue;
+      // Passou: `interpretar` PAROU neste passo, então o resto da lista sequer
+      // foi olhado — este é o último item que ele devolveu, e seguir o laço não
+      // faria nada. Retoma do próximo índice, senão vencer o portão seria o fim
+      // do fluxo e o link nunca chegaria a quem seguiu.
+      if (passou) return executarFluxo(account, auto, contactIgId, acao.indice + 1, contexto);
       await gravarCursor(account.ig_user_id, contactIgId, auto.id, acao.indice);
       return;
     }
@@ -701,7 +756,11 @@ async function executarFluxo(
         `select email from contacts where account_id = $1 and ig_id = $2`,
         [account.ig_user_id, contactIgId]
       )) as { email: string | null }[];
-      if (rows[0]?.email) continue;
+      // Mesmo motivo do portão: o e-mail que já temos resolve este passo, e o
+      // que vem depois dele só é visto numa nova interpretação.
+      if (rows[0]?.email) {
+        return executarFluxo(account, auto, contactIgId, acao.indice + 1, contexto);
+      }
       await enqueue({
         account_id: account.ig_user_id,
         kind: "dm_email_ask",
@@ -715,6 +774,15 @@ async function executarFluxo(
     }
 
     await enfileirarPasso(account, auto, contactIgId, acao, contexto);
+  }
+
+  // Chegar aqui com um ponto de parada só acontece quando quem para é uma `dm`
+  // de resposta rápida — portão e e-mail já retornaram acima. Ela espera o toque
+  // da pessoa, e sem gravar o cursor o toque recomeçaria a lista do zero e
+  // pararia no mesmo passo, para sempre.
+  if (r.pararEm !== null) {
+    await gravarCursor(account.ig_user_id, contactIgId, auto.id, r.pararEm);
+    return;
   }
 
   // A lista acabou: esta pessoa não está mais no meio de nada.
@@ -857,7 +925,14 @@ Em `lib/engine.ts`, dentro de `handleMessagingEvent`, substituir o bloco que lê
       }
 
       // Qualquer mensagem vale como "quero continuar": retoma do passo seguinte.
-      await executarFluxo(account, auto, senderId, parado.flow_step_index + 1);
+      //
+      // Menos no portão de follow, que retoma DELE MESMO, para `resolverFollow`
+      // consultar a Meta de novo. O portão só é portão se cada tentativa
+      // reconsultar: retomando do seguinte, bastaria mandar "ok" para pular o
+      // passo e receber o link sem nunca ter seguido.
+      const retomarDe =
+        passo?.tipo === "pedir_follow" ? parado.flow_step_index : parado.flow_step_index + 1;
+      await executarFluxo(account, auto, senderId, retomarDe);
     }
     return;
   }
@@ -869,9 +944,17 @@ E, nos dois pontos de resposta rápida (linhas 501-508), trocar
 ```ts
       // `FOLLOW:` é o botão "já sigo": o passo de follow é reavaliado, então
       // retoma DELE, não do seguinte.
+      //
+      // `AUTO:` é o botão de uma `dm` de resposta rápida: o toque É a resposta
+      // que aquele passo esperava, então retoma do SEGUINTE. Sem cursor, do
+      // começo — o botão pode ter vindo da mensagem de boas-vindas, que sai
+      // fora da lista.
+      const cursor = await lerCursor(account.ig_user_id, senderId);
       const doIndice = payload.startsWith("FOLLOW:")
-        ? ((await lerCursor(account.ig_user_id, senderId)) ?? 0)
-        : 0;
+        ? (cursor ?? 0)
+        : cursor === null
+          ? 0
+          : cursor + 1;
       if (auto) await executarFluxo(account, auto, senderId, doIndice);
 ```
 
@@ -893,6 +976,23 @@ O limite continua sendo regra do motor, não dado do passo — ele protege contr
 virar spam, e isso não é escolha de quem monta a automação:
 
 ```ts
+// Zera o contador de pedidos de follow deste contato.
+//
+// Sem isto o contador só sobe, e quem passou de MAX_FOLLOW_REQUESTS e voltar ao
+// portão trava em silêncio — o fluxo para ali e nem o pedido chega a ser
+// enviado. O limite existe para não virar spam num ciclo, não para ser
+// armadilha permanente por contato.
+//
+// A condição no fim evita escrever à toa em quem já está zerado, que é o caso
+// comum: todo passo de follow vencido passaria por aqui.
+async function zerarTentativasFollow(accountId: string, contactIgId: string) {
+  await sql().query(
+    `update contacts set follow_attempts = 0
+     where account_id = $1 and ig_id = $2 and follow_attempts > 0`,
+    [accountId, contactIgId]
+  );
+}
+
 // Resolve o passo de follow: consulta a Meta e decide se o fluxo segue.
 // Devolve true quando pode continuar.
 async function resolverFollow(
@@ -911,10 +1011,16 @@ async function resolverFollow(
     await logEvent(account.ig_user_id, "follow_check_unavailable", {
       contact_ig_id: contactIgId,
       automation_id: auto.id,
+      // qual passo da lista foi liberado sem confirmação
+      indice,
     });
+    await zerarTentativasFollow(account.ig_user_id, contactIgId);
     return true;
   }
-  if (segue) return true;
+  if (segue) {
+    await zerarTentativasFollow(account.ig_user_id, contactIgId);
+    return true;
+  }
 
   const rows = (await sql().query(
     `update contacts set follow_attempts = follow_attempts + 1

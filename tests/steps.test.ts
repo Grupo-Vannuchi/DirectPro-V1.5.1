@@ -28,6 +28,46 @@ describe("interpretar", () => {
     expect(r.pararEm).toBe(1);
   });
 
+  it("dm com botão e sem url é resposta rápida: enfileira e para", () => {
+    // O fluxo antigo mandava as boas-vindas com botão e só seguia depois do
+    // toque. Sem isto, o portão de follow consultaria a Meta antes de a pessoa
+    // ter engajado.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi", botao_label: "quero!" },
+        { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0]);
+    expect(r.pararEm).toBe(0);
+  });
+
+  it("dm com botão E url é botão de link: não para", () => {
+    // A pessoa abre o link e a vida segue — não há toque para esperar.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "o link", botao_label: "abrir", url: "https://x.y" },
+        { tipo: "dm", texto: "depois" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
+  it("dm sem botão não para", () => {
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi" },
+        { tipo: "dm", texto: "tchau" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
   it("retoma do índice pedido, sem repetir o que já saiu", () => {
     const r = interpretar(
       [
