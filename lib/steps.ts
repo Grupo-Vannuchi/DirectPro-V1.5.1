@@ -1,0 +1,108 @@
+// O fluxo de uma automação, como dado.
+//
+// Antes a sequência morava dentro do lib/engine.ts: advanceFlow chamava
+// followGate, que chamava enqueueFollowups, nessa ordem e só nessa. Isso punha
+// um teto na tela — um editor de blocos sobre aquele motor só poderia arrastar
+// dois blocos, e arrastar os outros mostraria uma ordem que o motor não executa.
+//
+// Este arquivo é FUNÇÃO PURA de propósito: não toca banco, não chama a Meta, não
+// conhece a fila. É a peça mais arriscada da mudança, e assim ela é a única
+// testável sem banco — o que importa num projeto cuja suíte não abre conexão.
+
+export type Passo =
+  | { tipo: "resposta_publica"; textos: string[] }
+  | { tipo: "dm"; texto: string; botao_label?: string; url?: string }
+  | { tipo: "esperar"; minutos: number }
+  | { tipo: "reagir_story"; emoji: string }
+  | { tipo: "pedir_follow"; texto: string; botao_label: string }
+  | { tipo: "pedir_email"; texto: string };
+
+// Passos que PARAM o fluxo: mandam o pedido e esperam a pessoa responder.
+const ESPERAM = new Set(["pedir_follow", "pedir_email"]);
+
+export type AcaoEnfileirar = {
+  passo: Passo;
+  indice: number;
+  // Atraso acumulado pelos `esperar` que vieram antes deste passo.
+  atrasoSegundos: number;
+};
+
+export type Resultado = {
+  enfileirar: AcaoEnfileirar[];
+  // Índice do passo que espera resposta, ou null se a lista terminou.
+  pararEm: number | null;
+  ignorados: { indice: number; motivo: string }[];
+};
+
+// Valida e normaliza um passo. Devolve o motivo quando não dá para usar.
+function conferir(p: unknown): { passo?: Passo; motivo?: string } {
+  if (!p || typeof p !== "object") return { motivo: "passo não é um objeto" };
+  const o = p as Record<string, unknown>;
+  const tipo = o.tipo;
+
+  if (tipo === "dm") {
+    if (typeof o.texto !== "string" || !o.texto.trim()) return { motivo: "dm sem texto" };
+    return { passo: p as Passo };
+  }
+  if (tipo === "esperar") {
+    if (typeof o.minutos !== "number" || !Number.isFinite(o.minutos) || o.minutos < 0) {
+      return { motivo: "esperar com minutos inválido" };
+    }
+    return { passo: p as Passo };
+  }
+  if (tipo === "resposta_publica") {
+    if (!Array.isArray(o.textos) || !o.textos.length) return { motivo: "resposta pública vazia" };
+    return { passo: p as Passo };
+  }
+  if (tipo === "reagir_story") {
+    if (typeof o.emoji !== "string" || !o.emoji) return { motivo: "reagir_story sem emoji" };
+    return { passo: p as Passo };
+  }
+  if (tipo === "pedir_follow") {
+    if (typeof o.texto !== "string" || !o.texto.trim()) return { motivo: "pedir_follow sem texto" };
+    return { passo: p as Passo };
+  }
+  if (tipo === "pedir_email") {
+    if (typeof o.texto !== "string" || !o.texto.trim()) return { motivo: "pedir_email sem texto" };
+    return { passo: p as Passo };
+  }
+  return { motivo: `tipo desconhecido: ${String(tipo)}` };
+}
+
+// Percorre a lista a partir de `deIndice` e diz o que fazer.
+//
+// `esperar` NÃO é enfileirado: ele soma no atraso dos passos seguintes. É assim
+// que a fila já funciona — cada item carrega o próprio atraso —, então espera
+// como passo custa zero mudança no dreno.
+export function interpretar(passos: unknown, deIndice: number): Resultado {
+  const r: Resultado = { enfileirar: [], pararEm: null, ignorados: [] };
+
+  if (!Array.isArray(passos)) {
+    r.ignorados.push({ indice: -1, motivo: "a automação não tem lista de passos" });
+    return r;
+  }
+
+  let atrasoSegundos = 0;
+
+  for (let i = Math.max(0, deIndice); i < passos.length; i++) {
+    const { passo, motivo } = conferir(passos[i]);
+    if (!passo) {
+      r.ignorados.push({ indice: i, motivo: motivo! });
+      continue;
+    }
+
+    if (passo.tipo === "esperar") {
+      atrasoSegundos += passo.minutos * 60;
+      continue;
+    }
+
+    r.enfileirar.push({ passo, indice: i, atrasoSegundos });
+
+    if (ESPERAM.has(passo.tipo)) {
+      r.pararEm = i;
+      return r;
+    }
+  }
+
+  return r;
+}

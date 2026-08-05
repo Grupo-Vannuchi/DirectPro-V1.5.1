@@ -1,0 +1,109 @@
+import { describe, it, expect } from "vitest";
+import { interpretar } from "../lib/steps";
+
+describe("interpretar", () => {
+  it("enfileira uma sequência simples até o fim", () => {
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi" },
+        { tipo: "dm", texto: "aqui está o link", url: "https://x.y" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
+  it("para no passo que espera, e o inclui no que enfileira", () => {
+    // O pedido de follow É enviado; o que para é o fluxo depois dele.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi" },
+        { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+        { tipo: "dm", texto: "link" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBe(1);
+  });
+
+  it("retoma do índice pedido, sem repetir o que já saiu", () => {
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi" },
+        { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+        { tipo: "dm", texto: "link" },
+      ],
+      2
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([2]);
+    expect(r.pararEm).toBeNull();
+  });
+
+  it("esperar não é enfileirado: ele atrasa o que vem depois", () => {
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "link" },
+        { tipo: "esperar", minutos: 60 },
+        { tipo: "dm", texto: "lembrete" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => [a.indice, a.atrasoSegundos])).toEqual([
+      [0, 0],
+      [2, 3600],
+    ]);
+  });
+
+  it("esperas somam", () => {
+    const r = interpretar(
+      [
+        { tipo: "esperar", minutos: 10 },
+        { tipo: "esperar", minutos: 5 },
+        { tipo: "dm", texto: "depois" },
+      ],
+      0
+    );
+    expect(r.enfileirar[0].atrasoSegundos).toBe(900);
+  });
+
+  it("pula passo inválido e diz por quê, em vez de estourar", () => {
+    // Automação mal montada tem que virar linha em Atividade, não exceção que
+    // derruba o webhook e faz a Meta reenviar por 36 horas.
+    const r = interpretar(
+      [{ tipo: "dm", texto: "ok" }, { tipo: "inventado" }, { tipo: "dm", texto: "fim" }],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 2]);
+    expect(r.ignorados).toEqual([{ indice: 1, motivo: "tipo desconhecido: inventado" }]);
+  });
+
+  it("pula dm sem texto", () => {
+    const r = interpretar([{ tipo: "dm" }, { tipo: "dm", texto: "vale" }], 0);
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([1]);
+    expect(r.ignorados[0].motivo).toBe("dm sem texto");
+  });
+
+  it("lista que não é lista não estoura", () => {
+    const r = interpretar(null, 0);
+    expect(r.enfileirar).toEqual([]);
+    expect(r.pararEm).toBeNull();
+    expect(r.ignorados[0].motivo).toBe("a automação não tem lista de passos");
+  });
+
+  it("índice além do fim devolve nada, sem estourar", () => {
+    const r = interpretar([{ tipo: "dm", texto: "oi" }], 99);
+    expect(r.enfileirar).toEqual([]);
+    expect(r.pararEm).toBeNull();
+  });
+
+  it("esperar com minutos inválido é ignorado e não atrasa nada", () => {
+    const r = interpretar(
+      [{ tipo: "esperar", minutos: -5 }, { tipo: "dm", texto: "x" }],
+      0
+    );
+    expect(r.enfileirar[0].atrasoSegundos).toBe(0);
+    expect(r.ignorados[0].motivo).toBe("esperar com minutos inválido");
+  });
+});
