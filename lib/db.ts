@@ -179,6 +179,10 @@ export type Automation = {
   ask_email: boolean;
   email_text: string;
   story_reaction: string; // emoji; vazio = não reage
+  // O fluxo como lista ordenada. `unknown[]` de propósito: o que vem do banco
+  // não tem garantia de forma, e quem valida é o interpretador de lib/steps.ts.
+  // Tipar como Passo[] aqui seria afirmar uma garantia que o jsonb não dá.
+  steps: unknown[];
   created_at: Date;
 };
 
@@ -375,6 +379,20 @@ const DDL = [
   // Nulo em contato nunca aberto, e nesse caso toda mensagem recebida conta como
   // não lida — que é o certo para quem chegou agora.
   `alter table contacts add column if not exists last_seen_at timestamptz`,
+  // O fluxo da automação como lista ordenada de passos. Substitui a sequência
+  // que estava codificada no engine e as colunas que a alimentavam.
+  //
+  // jsonb e não tabela: a lista é sempre lida e gravada inteira, a ordem é o
+  // próprio índice, e não há consulta que precise de um passo isolado.
+  `alter table automations add column if not exists steps jsonb not null default '[]'::jsonb`,
+  // Em que passo desta pessoa o fluxo parou, esperando resposta. Junto com
+  // last_automation_id, que já existe, responde "qual automação e onde".
+  // Nulo = não está no meio de nada.
+  //
+  // Substitui `awaiting`, que só sabia guardar 'follow' ou 'email' porque só
+  // havia dois lugares onde parar. Com passos como dados, os lugares são
+  // quantos a lista tiver.
+  `alter table contacts add column if not exists flow_step_index int`,
 ];
 
 type SqlClient = ReturnType<typeof sql>;
