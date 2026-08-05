@@ -498,17 +498,30 @@ describe("retomadaDoBotao", () => {
     expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", null)).toBe(2);
   });
 
-  it("cursor num pedido de e-mail avança — comportamento mantido, com preço", () => {
-    // Fixado porque é escolha, não dedução: o passo é pulado e o dono perde o
-    // e-mail daquela pessoa. Não é o preço do portão — para chegar ao pedido de
-    // e-mail a pessoa já atravessou o portão, então nada sai para quem não
-    // segue.
+  it("cursor num PEDIDO DE E-MAIL retoma DELE, não do seguinte", () => {
+    // O pedido de e-mail é portão pelo mesmo critério do de follow: o toque no
+    // botão `AUTO:` antigo não é a resposta que ele espera. Com o `+1`, o pedido
+    // era pulado e o endereço nunca era capturado — o dono marcou "pedir e-mail"
+    // justamente para capturá-lo, e pular em silêncio esvazia a opção.
+    //
+    // Retomar dele é idempotente: `executarFluxo` pula o passo sozinho quando
+    // `contacts.email` já está preenchido, então quem respondeu não fica preso;
+    // e quem não respondeu recebe o pedido de novo, deduplicado por
+    // `emailAskKey` no balde do dia.
     const passos = [
       { tipo: "dm", texto: "oi", botao_label: "quero!" },
       { tipo: "pedir_email", texto: "seu e-mail?" },
       { tipo: "dm", texto: "o link", url: "https://x.y" },
     ];
-    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", passos)).toBe(2);
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", passos)).toBe(1);
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", passos)).not.toBe(2);
+    // Pedido INVÁLIDO não é portão, pela mesma regra do `pedir_follow` sem
+    // texto: `interpretar` o ignora, logo ele nunca foi enviado.
+    const comPedidoQuebrado = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_email", texto: "   " }, // texto em branco
+    ];
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", comPedidoQuebrado)).toBe(2);
   });
 });
 

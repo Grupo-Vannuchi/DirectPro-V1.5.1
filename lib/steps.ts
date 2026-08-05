@@ -246,20 +246,34 @@ export function cursorDesta(
 //
 //   `dm` de resposta rápida → retoma do SEGUINTE. O toque É a resposta que ela
 //     esperava, exatamente como no ramo de texto de lib/engine.ts.
-//   portão de follow → retoma DELE MESMO. O `+1` aqui era o defeito: quem está
-//     parado no portão de A e NÃO SEGUE continua podendo tocar no botão antigo
-//     da boas-vindas de A, que segue tocável na mensagem já entregue. O cursor
-//     é o do portão, o `+1` o pulava, e o que saía era o link e os lembretes
-//     para quem não segue — a promessa central do produto. A alcançabilidade
-//     é a MESMA do botão "Já sigo!" antigo: se botão antigo não fosse tocável,
-//     o defeito que a onda passada corrigiu no ramo `FOLLOW:` também não
-//     existiria. Retomando dele, `resolverFollow` reconsulta a Meta e quem não
-//     segue continua barrado.
+//   PORTÃO — `pedir_follow` ou `pedir_email` → retoma DELE MESMO. O `+1` aqui
+//     era o defeito: quem está parado no portão de A continua podendo tocar no
+//     botão antigo da boas-vindas de A, que segue tocável na mensagem já
+//     entregue. O cursor é o do portão, o `+1` o pulava. A alcançabilidade é a
+//     MESMA do botão "Já sigo!" antigo: se botão antigo não fosse tocável, o
+//     defeito que a onda passada corrigiu no ramo `FOLLOW:` também não
+//     existiria.
 //
-// Um `pedir_email` cai no ramo do `+1`, e isso é o comportamento de hoje sendo
-// mantido, não uma dedução: o passo é pulado e o dono perde o e-mail daquela
-// pessoa. Não é o mesmo preço do portão — para chegar ao pedido de e-mail a
-// pessoa já atravessou o portão, então nada sai para quem não segue.
+// Os DOIS tipos entram, e a `dm` de resposta rápida não, porque a diferença
+// está no que o toque significa em cada um. Na `dm` o toque É a resposta
+// esperada — avançar é atender a pessoa. No portão não é: o que o portão espera
+// é o follow ou o endereço, e o toque não os entrega, então avançar é dar por
+// respondido o que ninguém respondeu.
+//
+//   `pedir_follow`: pular entregava o link e os lembretes a quem NÃO SEGUE — a
+//     promessa central do produto. Retomando dele, `resolverFollow` reconsulta
+//     a Meta e quem não segue continua barrado.
+//   `pedir_email`: pular esvaziava a opção que o dono marcou justamente para
+//     capturar o endereço — o pedido some em silêncio e o e-mail nunca chega.
+//
+// Retomar do pedido de e-mail é seguro e idempotente: `executarFluxo` já pula o
+// passo sozinho quando o e-mail do contato é conhecido (o ramo `pedir_email`
+// consulta `contacts.email` e segue para o índice seguinte), então quem já
+// respondeu não fica preso; e quem não respondeu recebe o pedido de novo,
+// deduplicado por `emailAskKey` no balde do dia.
+//
+// Com isso os três ramos param nos mesmos portões: o de texto, o `FOLLOW:` e
+// este.
 //
 // SEM cursor desta automação — nulo, ou de outra —, retoma de 0. Cursor de
 // outra automação é posição em outra lista, e o zero é o único ponto afirmável
@@ -283,7 +297,8 @@ export function retomadaDoBotao(
 ): number {
   const indice = cursorDesta(cursor, automationId);
   if (indice === null) return 0;
-  return passoEsperado(passos, indice)?.tipo === "pedir_follow" ? indice : indice + 1;
+  const tipo = passoEsperado(passos, indice)?.tipo;
+  return tipo === "pedir_follow" || tipo === "pedir_email" ? indice : indice + 1;
 }
 
 // De qual passo o toque em "Já sigo!" (`FOLLOW:<id>`) retoma.
