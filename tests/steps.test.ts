@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { interpretar, passoEsperado } from "../lib/steps";
+import {
+  interpretar,
+  passoEsperado,
+  retomadaDoFallback,
+  interrompeOFluxo,
+} from "../lib/steps";
 
 describe("interpretar", () => {
   it("enfileira uma sequência simples até o fim", () => {
@@ -182,5 +187,96 @@ describe("passoEsperado", () => {
     expect(passoEsperado([{ tipo: "dm", texto: "oi", botao_label: "b" }], 9)).toBeUndefined();
     expect(passoEsperado(null, 0)).toBeUndefined();
     expect(passoEsperado(undefined, 0)).toBeUndefined();
+  });
+});
+
+describe("interrompeOFluxo", () => {
+  const parada = { id: "A", match_type: "contains" };
+
+  it("a mesma automação não interrompe a si mesma", () => {
+    // Impede o defeito que fazia o link nunca sair, em silêncio: quem respondia
+    // à boas-vindas repetindo a própria palavra-chave era tratado como pedido de
+    // outra coisa, o fluxo reiniciava do índice 0, parava de novo na boas-vindas
+    // e não enfileirava nada — a `passoKey` do dia já estava na fila e o
+    // `on conflict do nothing` engolia o item. O cursor não andava, nenhuma
+    // mensagem saía, e no dia seguinte a boas-vindas era reenviada.
+    expect(interrompeOFluxo({ id: "A", match_type: "contains" }, parada)).toBe(false);
+  });
+
+  it("outra automação com palavra-chave específica interrompe", () => {
+    // Impede o oposto: sem isto, quem está parado esperando o toque num botão
+    // fica surdo a toda outra automação. A pessoa digitou a palavra-chave da B —
+    // é pedido explícito, e não atendê-lo prende o contato na A para sempre.
+    expect(interrompeOFluxo({ id: "B", match_type: "contains" }, parada)).toBe(true);
+  });
+
+  it('outra automação em "Qualquer texto" NÃO interrompe', () => {
+    // Impede o sequestro: uma automação com `match_type: "any"` casa com toda
+    // mensagem, de todo mundo, sempre. Quando ela podia interromper, qualquer
+    // resposta de quem estava no meio de outro fluxo era lida como gatilho dela,
+    // todo contato parado era arrastado para a mesma automação, e ninguém
+    // chegava ao link.
+    expect(interrompeOFluxo({ id: "B", match_type: "any" }, parada)).toBe(false);
+  });
+
+  it("nenhuma automação casada não interrompe", () => {
+    // Sem gatilho novo não há o que interromper: a mensagem é resposta ao passo
+    // em que a pessoa está parada, e tratá-la como interrupção descartaria o
+    // cursor de quem só estava conversando.
+    expect(interrompeOFluxo(undefined, parada)).toBe(false);
+  });
+});
+
+describe("retomadaDoFallback", () => {
+  it("na lista típica, retoma depois da boas-vindas", () => {
+    // Impede o defeito de reenviar a boas-vindas: retomar do zero reinterpretava
+    // a lista inteira e reenfileirava a mensagem que a pessoa acabou de receber
+    // — e sem colisão de chave, porque a primeira saiu como `privateReplyKey` e
+    // a repetição sairia como `passoKey`. Duas mensagens iguais, pessoa real.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoFallback(passos)).toBe(1);
+  });
+
+  it("quando o ponto de espera é o portão de follow, retoma DELE MESMO", () => {
+    // Impede entregar o link a quem não segue: pular o portão para "adiantar" o
+    // fluxo dispensaria a consulta à Meta, e bastaria mandar qualquer texto para
+    // receber o link sem nunca ter seguido.
+    const passos = [
+      { tipo: "dm", texto: "oi" },
+      { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoFallback(passos)).toBe(1);
+  });
+
+  it("lista sem ponto de espera não retoma nada", () => {
+    // Impede repetir a lista inteira: sem passo de espera tudo já foi
+    // enfileirado, link incluído, e retomar do zero mandaria tudo de novo.
+    const passos = [
+      { tipo: "dm", texto: "oi" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoFallback(passos)).toBeNull();
+    // Automação sem lista nenhuma: o `steps` vem CRU do banco.
+    expect(retomadaDoFallback(null)).toBeNull();
+  });
+
+  it("com duas dm de resposta rápida, não retoma nada", () => {
+    // Impede a mensagem repetida que a Fase 1b vai tornar possível: a dedução
+    // supõe que o primeiro ponto de espera é o último passo entregue, e com dois
+    // botões na lista isso pode ser falso — a pessoa pode ter tocado no primeiro
+    // e travado no segundo. Como nenhuma das duas é `dm_link`, o fallback
+    // continua disparando a cada mensagem, e retomar do índice deduzido
+    // REENVIARIA a segunda. Mandar nada é recuperável; mandar de novo não é.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "dm", texto: "confirma?", botao_label: "confirmo" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoFallback(passos)).toBeNull();
   });
 });

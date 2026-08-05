@@ -11,7 +11,16 @@ import {
 import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
-import { interpretar, passoEsperado, type AcaoEnfileirar } from "./steps";
+// `retomadaDoFallback` e `interrompeOFluxo` moraram aqui e agora vêm de
+// lib/steps.ts: as duas são decisão pura, e dentro de um arquivo `server-only`
+// nenhum teste as alcançava. Foram justamente as que mais deram defeito.
+import {
+  interpretar,
+  passoEsperado,
+  retomadaDoFallback,
+  interrompeOFluxo,
+  type AcaoEnfileirar,
+} from "./steps";
 // `welcomeMessageKey` não é mais importado aqui: era a chave do enfileiramento
 // de boas-vindas por coluna, que saiu. Ela continua em lib/dedupe.ts, com teste,
 // porque a fila antiga ainda tem linhas gravadas com esse prefixo.
@@ -660,65 +669,6 @@ async function shouldFallbackFollowup(
     [accountId, contactIgId, automationId]
   )) as { welcomed: boolean; linked: boolean }[];
   return Boolean(rows[0]?.welcomed) && !rows[0]?.linked;
-}
-
-// De qual passo o fallback retoma. Null quando não dá para afirmar.
-//
-// `shouldFallbackFollowup` respondeu "já houve boas-vindas e o link não saiu", e
-// a intenção sempre foi MANDAR O LINK — não recomeçar a conversa.
-//
-// O ponto de retomada é dedutível, sem adivinhação: `interpretar` a partir do
-// zero enfileira tudo até o primeiro passo de espera e para NELE. Como a
-// boas-vindas comprovadamente saiu, tudo até esse passo já foi entregue — ele é
-// o último entregue, e o que veio depois nunca chegou a ser enfileirado. Então:
-//
-//   `dm` de resposta rápida → retoma do SEGUINTE. O que ela esperava era o
-//     toque no botão, que não veio; o texto que a pessoa mandou vale como
-//     resposta, do mesmo jeito que no ramo do cursor.
-//   portão de follow ou pedido de e-mail → retoma DELE MESMO, para o portão
-//     reconsultar a Meta e o e-mail ser reavaliado. Pular entregaria o link a
-//     quem não seguiu.
-//
-// Sem passo de espera nenhum, a lista teria sido enfileirada inteira — link
-// incluído — e `shouldFallbackFollowup` não teria dito sim. Se ainda assim
-// acontecer, não retoma nada: repetir a lista manda mensagem repetida para
-// pessoa real, e é justamente isso que esta correção existe para evitar.
-function retomadaDoFallback(steps: unknown): number | null {
-  const { pararEm } = interpretar(steps, 0);
-  if (pararEm === null) return null;
-  const passo = passoEsperado(steps, pararEm);
-  return passo?.tipo === "dm" ? pararEm + 1 : pararEm;
-}
-
-// Quem está parado esperando o toque num botão pode ser interrompido por outra
-// automação? Só quando duas coisas valem ao mesmo tempo.
-//
-// A PRIMEIRA é que a automação casada seja OUTRA. Comparar por id, e não só
-// perguntar "casou com alguma?", é o ponto: quando a pessoa repete a palavra-
-// chave da automação em que ela já está parada, isso não é pedido de outra
-// coisa, é a mesma conversa continuando — e ela tem que retomar do cursor. Sem
-// a comparação, esse caso caía no fluxo normal e reinterpretava a lista do
-// índice 0: parava de novo na boas-vindas, regravava o cursor em 0 e não
-// enfileirava nada, porque a boas-vindas do dia já estava na fila com a mesma
-// `passoKey` e o `on conflict do nothing` engolia o item. Nenhuma mensagem
-// saía, o cursor não andava, e cada nova mensagem repetia o mesmo nada — até
-// virar o dia, quando a chave mudava de balde e a boas-vindas saía OUTRA VEZ
-// para uma pessoa real, com o link ainda sem sair. Basta a pessoa repetir a
-// palavra-chave para cair nisso, e a palavra-chave é justamente o que ela
-// acabou de ler na boas-vindas.
-//
-// A SEGUNDA é que a automação nova NÃO seja `match_type: "any"`. A distinção é
-// entre "pediu outra coisa" e "caiu na rede": palavra-chave específica é um
-// pedido explícito — a pessoa digitou aquilo, e interromper é atendê-la. Já
-// "Qualquer texto" não é escolha de ninguém, é rede de arrasto: casa com toda
-// mensagem, de todo mundo, sempre. Se ela pudesse interromper, sequestraria
-// todo contato parado no meio de qualquer outro fluxo, e ninguém chegaria ao
-// link. Pega-tudo serve para quem não tem dono; quem está no meio de uma
-// conversa já tem.
-function interrompeOFluxo(casada: Automation | undefined, parada: Automation): boolean {
-  if (!casada) return false;
-  if (casada.id === parada.id) return false;
-  return casada.match_type !== "any";
 }
 
 export async function handleCommentEvent(entryId: string | undefined, value: CommentValue) {

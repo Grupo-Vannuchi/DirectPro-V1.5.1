@@ -137,3 +137,110 @@ export function interpretar(passos: unknown, deIndice: number): Resultado {
 
   return r;
 }
+
+// Quantos passos da lista PARAM o fluxo de vez.
+//
+// Só a `dm` de resposta rápida entra nesta conta, e a distinção não é
+// decorativa: `pedir_follow` e `pedir_email` são portões que a própria execução
+// reavalia (o portão reconsulta a Meta; o pedido de e-mail é pulado quando o
+// endereço já é conhecido), então o fluxo pode atravessá-los sozinho. A `dm` de
+// resposta rápida não: nada além do toque da pessoa a destrava.
+//
+// Passo inválido não conta, pelo mesmo motivo de `passoEsperado`: `interpretar`
+// o ignora, então ele nunca foi enviado e nunca parou nada.
+function contarParadasDuras(passos: unknown[]): number {
+  let n = 0;
+  for (const p of passos) {
+    const { passo } = conferir(p);
+    if (passo && passo.tipo === "dm" && esperaResposta(passo)) n++;
+  }
+  return n;
+}
+
+// De qual passo o fallback retoma. Null quando não dá para afirmar.
+//
+// Veio de lib/engine.ts, onde era pura e por isso não testável — e onde esteve
+// no centro de dois defeitos. Aqui ela é coberta por teste.
+//
+// O contexto: `shouldFallbackFollowup` (lib/engine.ts) respondeu "já houve
+// boas-vindas e o link não saiu", e a intenção sempre foi MANDAR O LINK — não
+// recomeçar a conversa.
+//
+// A dedução: `interpretar` a partir do zero enfileira tudo até o primeiro passo
+// de espera e para NELE. Como a boas-vindas comprovadamente saiu, tudo até esse
+// passo já foi entregue, e o que veio depois nunca chegou a ser enfileirado.
+//
+//   `dm` de resposta rápida → retoma do SEGUINTE. O que ela esperava era o
+//     toque no botão, que não veio; o texto que a pessoa mandou vale como
+//     resposta, do mesmo jeito que no ramo do cursor.
+//   portão de follow ou pedido de e-mail → retoma DELE MESMO, para o portão
+//     reconsultar a Meta e o e-mail ser reavaliado. Pular entregaria o link a
+//     quem não segue.
+//
+// O CRITÉRIO CONSERVADOR, e por que ele existe: a dedução acima só vale
+// enquanto houver no máximo UMA parada dura na lista (ver `contarParadasDuras`).
+// É o que toda lista gravada pelo formulário tem hoje — a boas-vindas é a única
+// `dm` com rótulo e sem url —, mas a Fase 1b deixa montar a lista livremente, e
+// com duas `dm` de resposta rápida seguidas a dedução vira mentira: a pessoa
+// pode ter tocado no primeiro botão, recebido a segunda `dm` e travado ALI. Como
+// nenhuma dessas duas é `dm_link`, `shouldFallbackFollowup` continua dizendo sim
+// a cada mensagem, e retomar do índice deduzido REENVIA a segunda — mensagem
+// repetida para pessoa real.
+//
+// Havendo mais de uma, não retoma nada. Mandar nada é recuperável: a pessoa
+// manda outra mensagem, ou toca no botão que ainda está lá. Mandar de novo o que
+// já foi mandado não é.
+//
+// Os portões ficam fora da conta de propósito: o fallback retoma DELES MESMOS,
+// sem afirmar nada sobre o que veio depois, e reenviá-los é o comportamento
+// pretendido — o portão só é portão se cada tentativa reconsultar.
+//
+// Sem passo de espera nenhum, a lista teria sido enfileirada inteira — link
+// incluído — e `shouldFallbackFollowup` não teria dito sim. Se ainda assim
+// acontecer, também não retoma nada: repetir a lista manda mensagem repetida.
+export function retomadaDoFallback(passos: unknown): number | null {
+  const { pararEm } = interpretar(passos, 0);
+  if (pararEm === null) return null;
+  if (Array.isArray(passos) && contarParadasDuras(passos) > 1) return null;
+  const passo = passoEsperado(passos, pararEm);
+  return passo?.tipo === "dm" ? pararEm + 1 : pararEm;
+}
+
+// Quem está parado esperando o toque num botão pode ser interrompido por outra
+// automação? Só quando duas coisas valem ao mesmo tempo.
+//
+// Veio de lib/engine.ts pelo mesmo motivo de `retomadaDoFallback`: é decisão
+// pura, e decisão pura sem teste é onde os defeitos apareceram. Recebe só
+// `{ id, match_type }` — o bastante para decidir, e nada que arraste o tipo
+// `Automation` (lib/db.ts, `server-only`) para dentro deste arquivo.
+//
+// A PRIMEIRA é que a automação casada seja OUTRA. Comparar por id, e não só
+// perguntar "casou com alguma?", é o ponto: quando a pessoa repete a palavra-
+// chave da automação em que ela já está parada, isso não é pedido de outra
+// coisa, é a mesma conversa continuando — e ela tem que retomar do cursor. Sem
+// a comparação, esse caso caía no fluxo normal e reinterpretava a lista do
+// índice 0: parava de novo na boas-vindas, regravava o cursor em 0 e não
+// enfileirava nada, porque a boas-vindas do dia já estava na fila com a mesma
+// `passoKey` e o `on conflict do nothing` engolia o item. Nenhuma mensagem
+// saía, o cursor não andava, e cada nova mensagem repetia o mesmo nada — até
+// virar o dia, quando a chave mudava de balde e a boas-vindas saía OUTRA VEZ
+// para uma pessoa real, com o link ainda sem sair. Basta a pessoa repetir a
+// palavra-chave para cair nisso, e a palavra-chave é justamente o que ela
+// acabou de ler na boas-vindas.
+//
+// A SEGUNDA é que a automação nova NÃO seja `match_type: "any"`. A distinção é
+// entre "pediu outra coisa" e "caiu na rede": palavra-chave específica é um
+// pedido explícito — a pessoa digitou aquilo, e interromper é atendê-la. Já
+// "Qualquer texto" não é escolha de ninguém, é rede de arrasto: casa com toda
+// mensagem, de todo mundo, sempre. Se ela pudesse interromper, sequestraria
+// todo contato parado no meio de qualquer outro fluxo, e ninguém chegaria ao
+// link. Pega-tudo serve para quem não tem dono; quem está no meio de uma
+// conversa já tem.
+export function interrompeOFluxo(
+  casada: { id: string; match_type: string } | undefined,
+  parada: { id: string }
+): boolean {
+  if (!casada) return false;
+  if (casada.id === parada.id) return false;
+  return casada.match_type !== "any";
+}
