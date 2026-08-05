@@ -193,6 +193,15 @@ function contarParadasDuras(passos: unknown[]): number {
 // `passoEsperado`: `interpretar` o ignora, logo ele nunca foi enviado e não é
 // portão nenhum. Retomar de um `pedir_follow` sem texto entregaria a quem não
 // segue tudo o que vem depois dele.
+//
+// COM MAIS DE UM PORTÃO, o primeiro vence, e o preço precisa estar dito: o
+// payload `FOLLOW:<id>` nomeia a automação, não o portão. Quem estava parado no
+// SEGUNDO portão e toca em "Já sigo!" sem cursor desta automação (nulo, ou de
+// outra) retoma no primeiro, e tudo o que houver entre os dois é reentregue.
+// Nenhuma lista do formulário chega a isso — `montarPassos`
+// (app/automacoes/actions.ts) emite um portão só —, mas lista montada à mão
+// chega, e é para lá que a Fase 1b vai. Distinguir os portões exige pôr o índice
+// no payload, o que é mudança de formato de botão já entregue: fica para lá.
 export function indiceDoPortao(passos: unknown): number | null {
   if (!Array.isArray(passos)) return null;
   for (let i = 0; i < passos.length; i++) {
@@ -223,6 +232,99 @@ export function cursorDesta(
   automationId: string
 ): number | null {
   return cursor.automationId === automationId ? cursor.indice : null;
+}
+
+// De qual passo o toque num botão de RESPOSTA RÁPIDA (`AUTO:<id>`) retoma.
+//
+// Veio de lib/engine.ts inteira, e não em pedaços, porque era a composição — e
+// não as peças — que estava sem teste. `cursorDesta`, `indiceDoPortao` e
+// `passoEsperado` sempre foram puras e cobertas; a ESCOLHA entre elas morava
+// dentro de `server-only`, onde nenhum teste chega, e foi essa escolha que
+// produziu defeito nas duas ondas anteriores.
+//
+// Com cursor DESTA automação, a regra tem dois ramos:
+//
+//   `dm` de resposta rápida → retoma do SEGUINTE. O toque É a resposta que ela
+//     esperava, exatamente como no ramo de texto de lib/engine.ts.
+//   portão de follow → retoma DELE MESMO. O `+1` aqui era o defeito: quem está
+//     parado no portão de A e NÃO SEGUE continua podendo tocar no botão antigo
+//     da boas-vindas de A, que segue tocável na mensagem já entregue. O cursor
+//     é o do portão, o `+1` o pulava, e o que saía era o link e os lembretes
+//     para quem não segue — a promessa central do produto. A alcançabilidade
+//     é a MESMA do botão "Já sigo!" antigo: se botão antigo não fosse tocável,
+//     o defeito que a onda passada corrigiu no ramo `FOLLOW:` também não
+//     existiria. Retomando dele, `resolverFollow` reconsulta a Meta e quem não
+//     segue continua barrado.
+//
+// Um `pedir_email` cai no ramo do `+1`, e isso é o comportamento de hoje sendo
+// mantido, não uma dedução: o passo é pulado e o dono perde o e-mail daquela
+// pessoa. Não é o mesmo preço do portão — para chegar ao pedido de e-mail a
+// pessoa já atravessou o portão, então nada sai para quem não segue.
+//
+// SEM cursor desta automação — nulo, ou de outra —, retoma de 0. Cursor de
+// outra automação é posição em outra lista, e o zero é o único ponto afirmável
+// para o null: ele tanto pode ser "nunca começou" quanto "o fluxo TERMINOU"
+// (`executarFluxo` limpa o cursor no fim da lista), e a coluna não separa os
+// dois. Repetir a lista é recuperável — ela para na primeira parada dura, e a
+// `passoKey` segura o dia; começar no meio às cegas não é.
+//
+// CURSOR OBSOLETO — índice que não existe mais, ou passo que não espera nada,
+// porque a lista foi editada depois de o cursor ser gravado — cai no `+1`
+// também, e a escolha é deliberada. Índice morto não é portão, então avançar
+// não pula portão nenhum: os portões que vierem depois continuam sendo
+// interpretados normalmente. Do zero, a alternativa, a boas-vindas sairia de
+// novo. Quando o `+1` cai além do fim da lista, `interpretar` não enfileira
+// nada e `executarFluxo` limpa o cursor: o toque não faz nada, e a pessoa
+// destrava mandando qualquer mensagem.
+export function retomadaDoBotao(
+  cursor: { indice: number | null; automationId: string | null },
+  automationId: string,
+  passos: unknown
+): number {
+  const indice = cursorDesta(cursor, automationId);
+  if (indice === null) return 0;
+  return passoEsperado(passos, indice)?.tipo === "pedir_follow" ? indice : indice + 1;
+}
+
+// De qual passo o toque em "Já sigo!" (`FOLLOW:<id>`) retoma.
+//
+// Mesma mudança de casa de `retomadaDoBotao`, e pelo mesmo motivo: o
+// comportamento é o que a onda passada instalou, o que faltava era teste.
+//
+// Com cursor DESTA automação, retoma DELE — o portão é reavaliado, não pulado.
+//
+// Sem cursor desta, o ponto de partida NÃO é o zero, e é aqui que este ramo
+// difere do `AUTO:`: o payload `FOLLOW:<id>` só existe porque o portão desta
+// automação foi entregue, então o toque AFIRMA onde a pessoa está. O zero era
+// no-op para toda lista que o formulário grava, e por construção: a boas-vindas
+// é obrigatória, vem antes do portão e sempre com rótulo e sem url — parada
+// dura. `interpretar` do zero parava NELA, nunca chegava ao portão, e ainda
+// gravava o cursor na boas-vindas, de modo que o toque seguinte encontrava esse
+// cursor (agora desta automação) e parava no mesmo lugar: o "Já sigo!" nunca
+// mais funcionava.
+//
+// O PREÇO de retomar do portão, por inteiro, porque ele NÃO é o mesmo do zero
+// no ramo `AUTO:`: se o fluxo já tinha terminado (cursor limpo), o `AUTO:` do
+// zero esbarra na parada dura da boas-vindas e o estrago é UMA mensagem
+// repetida. Do portão não há parada dura depois dele numa lista do formulário —
+// o que vem é o link e os lembretes, nenhum deles resposta rápida —, então
+// `interpretar` enfileira a CAUDA INTEIRA e devolve `pararEm: null`. A
+// `passoKey` só segura dentro do dia; virado o balde, um toque num "Já sigo!"
+// antigo reentrega tudo de novo. A decisão continua valendo, porque a
+// alternativa é não responder nada a quem acabou de tocar no botão, mas ela se
+// paga em mensagens repetidas, não em uma.
+//
+// O `?? 0` final é alcançável PELO FORMULÁRIO, e não só por lista montada à
+// mão: basta o dono desmarcar "exigir follow" e salvar. `montarPassos`
+// (app/automacoes/actions.ts) para de emitir o `pedir_follow`, e os botões
+// `FOLLOW:<id>` já entregues continuam tocáveis nas conversas antigas. É "lista
+// que não tem portão AGORA", e aí o zero é mesmo o único ponto afirmável.
+export function retomadaDoFollow(
+  cursor: { indice: number | null; automationId: string | null },
+  automationId: string,
+  passos: unknown
+): number {
+  return cursorDesta(cursor, automationId) ?? indiceDoPortao(passos) ?? 0;
 }
 
 // De qual passo o fallback retoma. Null quando não dá para afirmar.

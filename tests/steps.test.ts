@@ -3,6 +3,8 @@ import {
   interpretar,
   passoEsperado,
   retomadaDoFallback,
+  retomadaDoBotao,
+  retomadaDoFollow,
   interrompeOFluxo,
   indiceDoPortao,
   cursorDesta,
@@ -335,11 +337,17 @@ describe("indiceDoPortao", () => {
   });
 
   it("o primeiro portão vence, quando há mais de um", () => {
+    // A consequência, que o nome não diz: `FOLLOW:<id>` nomeia a automação, não
+    // o portão. Quem estava parado no SEGUNDO portão e toca em "Já sigo!" sem
+    // cursor desta automação retoma no PRIMEIRO, e o que houver entre os dois é
+    // reentregue. Inalcançável pelo formulário, que emite um portão só;
+    // alcançável por lista montada à mão, que é para onde a Fase 1b vai.
     const passos = [
       { tipo: "pedir_follow", texto: "a", botao_label: "x" },
       { tipo: "pedir_follow", texto: "b", botao_label: "y" },
     ];
     expect(indiceDoPortao(passos)).toBe(0);
+    expect(retomadaDoFollow({ indice: null, automationId: null }, "A", passos)).toBe(0);
   });
 });
 
@@ -419,5 +427,120 @@ describe("retomadaDoFallback", () => {
       { tipo: "dm", texto: "o link", url: "https://x.y" },
     ];
     expect(retomadaDoFallback(passos)).toBeNull();
+  });
+});
+
+// A lista que o formulário grava, com lembrete: é nela que os dois ramos de
+// resposta rápida decidem, e é dela que saem os índices citados abaixo.
+const listaDoFormulario = [
+  { tipo: "dm", texto: "oi", botao_label: "Quero o link! 🔗" }, // 0 parada dura
+  { tipo: "pedir_follow", texto: "me segue", botao_label: "Já sigo! ✅" }, // 1 portão
+  { tipo: "dm", texto: "o link", botao_label: "Abrir link", url: "https://x.y" }, // 2
+  { tipo: "esperar", minutos: 60 }, // 3
+  { tipo: "dm", texto: "não esquece do link" }, // 4
+];
+
+describe("retomadaDoBotao", () => {
+  it("cursor no PORTÃO retoma DELE, não do seguinte", () => {
+    // Este é o teste do defeito. A pessoa está parada no portão de A e NÃO
+    // segue. O botão antigo da boas-vindas de A (`AUTO:<A>`) continua tocável na
+    // mensagem já entregue — a mesma alcançabilidade do "Já sigo!" antigo que a
+    // onda passada tratou. Com o `+1`, o toque retomava do índice 2 e o que saía
+    // era o link e o lembrete, sem passar pelo portão: a promessa central do
+    // produto quebrada por um caminho de um toque.
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", listaDoFormulario)).toBe(1);
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", listaDoFormulario)).not.toBe(2);
+    // E a confirmação do estrago que o 2 causava: link (2) e lembrete (4).
+    expect(interpretar(listaDoFormulario, 2).enfileirar.map((a) => a.indice)).toEqual([2, 4]);
+  });
+
+  it("cursor numa dm de resposta rápida retoma do SEGUINTE", () => {
+    // Aqui o `+1` é o certo: o toque É a resposta que ela esperava, do mesmo
+    // jeito que o ramo de texto trata a mensagem digitada.
+    expect(retomadaDoBotao({ indice: 0, automationId: "A" }, "A", listaDoFormulario)).toBe(1);
+  });
+
+  it("cursor de OUTRA automação retoma do zero", () => {
+    // O índice é posição dentro de UMA lista. Somar 1 ao cursor de B dentro da
+    // lista de A pularia passos de A, o portão inclusive.
+    expect(retomadaDoBotao({ indice: 1, automationId: "B" }, "A", listaDoFormulario)).toBe(0);
+    expect(retomadaDoBotao({ indice: 4, automationId: "B" }, "A", listaDoFormulario)).toBe(0);
+  });
+
+  it("cursor NULO retoma do zero", () => {
+    // Nulo não separa "nunca começou" de "terminou", então o zero é o único
+    // ponto afirmável — e do zero a lista para na primeira parada dura.
+    expect(retomadaDoBotao({ indice: null, automationId: "A" }, "A", listaDoFormulario)).toBe(0);
+    expect(retomadaDoBotao({ indice: null, automationId: null }, "A", listaDoFormulario)).toBe(0);
+  });
+
+  it("cursor obsoleto avança um, e além do fim isso não enfileira nada", () => {
+    // Lista editada depois de o cursor ser gravado. As duas formas caem no mesmo
+    // ramo, e o comportamento é FIXADO aqui: avança um.
+    //
+    // Índice que não existe mais: o `+1` cai além do fim e `interpretar` não
+    // enfileira nada — o toque não faz nada, e a pessoa destrava mandando
+    // qualquer mensagem. A alternativa era o zero, que reenviaria a boas-vindas.
+    expect(retomadaDoBotao({ indice: 9, automationId: "A" }, "A", listaDoFormulario)).toBe(10);
+    expect(interpretar(listaDoFormulario, 10).enfileirar).toEqual([]);
+    // Índice que existe mas não espera mais nada (virou botão de link): avança
+    // também, e isso não pula portão nenhum — os que vierem depois continuam
+    // sendo interpretados.
+    expect(retomadaDoBotao({ indice: 2, automationId: "A" }, "A", listaDoFormulario)).toBe(3);
+    // Portão INVÁLIDO não é portão: `interpretar` o ignora, logo ele nunca foi
+    // entregue e não há o que reavaliar.
+    const comPortaoQuebrado = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_follow", botao_label: "já sigo" }, // sem texto
+    ];
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", comPortaoQuebrado)).toBe(2);
+    // E lista que não é lista não estoura.
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", null)).toBe(2);
+  });
+
+  it("cursor num pedido de e-mail avança — comportamento mantido, com preço", () => {
+    // Fixado porque é escolha, não dedução: o passo é pulado e o dono perde o
+    // e-mail daquela pessoa. Não é o preço do portão — para chegar ao pedido de
+    // e-mail a pessoa já atravessou o portão, então nada sai para quem não
+    // segue.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_email", texto: "seu e-mail?" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoBotao({ indice: 1, automationId: "A" }, "A", passos)).toBe(2);
+  });
+});
+
+describe("retomadaDoFollow", () => {
+  it("cursor DESTA automação retoma dele mesmo", () => {
+    // O portão é reavaliado, não pulado: `resolverFollow` reconsulta a Meta.
+    expect(retomadaDoFollow({ indice: 1, automationId: "A" }, "A", listaDoFormulario)).toBe(1);
+  });
+
+  it("cursor de OUTRA automação retoma do portão desta lista", () => {
+    // O `FOLLOW:<id>` só existe porque o portão DESTA automação foi entregue: o
+    // toque afirma onde a pessoa está, mesmo com o cursor emprestado de B.
+    expect(retomadaDoFollow({ indice: 4, automationId: "B" }, "A", listaDoFormulario)).toBe(1);
+  });
+
+  it("cursor NULO retoma do portão, e não do zero", () => {
+    // Do zero era no-op: `interpretar` parava na boas-vindas (parada dura) e
+    // nunca chegava ao portão — o botão "Já sigo!" não fazia nada.
+    expect(retomadaDoFollow({ indice: null, automationId: "A" }, "A", listaDoFormulario)).toBe(1);
+    expect(interpretar(listaDoFormulario, 0).pararEm).toBe(0);
+  });
+
+  it("lista SEM portão retoma do zero", () => {
+    // Alcançável pelo formulário: basta desmarcar "exigir follow" e salvar. Os
+    // botões `FOLLOW:<id>` já entregues continuam tocáveis.
+    const semPortao = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(retomadaDoFollow({ indice: null, automationId: "A" }, "A", semPortao)).toBe(0);
+    expect(retomadaDoFollow({ indice: 3, automationId: "B" }, "A", semPortao)).toBe(0);
+    // E lista que não é lista não estoura.
+    expect(retomadaDoFollow({ indice: null, automationId: null }, "A", null)).toBe(0);
   });
 });

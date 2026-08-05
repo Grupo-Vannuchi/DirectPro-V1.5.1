@@ -11,21 +11,26 @@ import {
 import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
-// `retomadaDoFallback` e `interrompeOFluxo` moraram aqui e agora vêm de
-// lib/steps.ts: as duas são decisão pura, e dentro de um arquivo `server-only`
-// nenhum teste as alcançava. Foram justamente as que mais deram defeito.
+// `retomadaDoFallback`, `interrompeOFluxo`, `retomadaDoBotao` e
+// `retomadaDoFollow` moraram aqui e agora vêm de lib/steps.ts: as quatro são
+// decisão pura, e dentro de um arquivo `server-only` nenhum teste as alcançava.
+// Foram justamente as que mais deram defeito. As duas últimas saíram inteiras, e
+// não em pedaços: as peças (`cursorDesta`, `indiceDoPortao`, `passoEsperado`) já
+// eram testadas uma a uma — o que estava descoberto era a COMPOSIÇÃO delas.
 import {
   interpretar,
   passoEsperado,
   retomadaDoFallback,
+  retomadaDoBotao,
+  retomadaDoFollow,
   interrompeOFluxo,
-  indiceDoPortao,
-  cursorDesta,
   type AcaoEnfileirar,
 } from "./steps";
 // `welcomeMessageKey` não é mais importado aqui: era a chave do enfileiramento
 // de boas-vindas por coluna, que saiu. Ela continua em lib/dedupe.ts, com teste,
-// porque a fila antiga ainda tem linhas gravadas com esse prefixo.
+// e o motivo está escrito lá (lib/dedupe.ts, nota do topo) — não é a fila ter
+// linhas antigas com esse prefixo, que era a justificativa errada: a tabela só
+// tem `mr:` e `passo:`. É o desmonte pela metade das colunas órfãs.
 //
 // `privateReplyKey` voltou a ser usado. Não é resíduo: a resposta privada ao
 // comentário é o ÚNICO caminho de entrega de uma automação disparada por
@@ -503,10 +508,13 @@ async function limparCursor(accountId: string, contactIgId: string) {
 //   SUMIU — índice de B válido dentro da lista de A pulava passos de A, o
 //     portão de follow inclusive, e entregava o link a quem não segue. Com
 //     `cursorDesta` (lib/steps.ts), o índice emprestado nunca mais é aplicado.
-//   CONTINUA DE PÉ — o lugar da pessoa em B se perde. Não mais por
-//     `limparCursor` apagando: agora `executarFluxo(A, ...)` termina em
-//     `gravarCursor(A, ...)` e SOBRESCREVE o `flow_step_index` de B. Muda a
-//     forma, não o resultado.
+//   CONTINUA DE PÉ — o lugar da pessoa em B se perde, e pelas DUAS formas, que
+//     coexistem. A comum é a sobrescrita: `executarFluxo(A, ...)` termina em
+//     `gravarCursor(A, ...)`, que escreve `flow_step_index` sem olhar de quem
+//     era. A outra é o apagamento, exatamente como antes: se o portão de A passa
+//     e a lista de A termina, `executarFluxo` cai no `limparCursor` (logo
+//     abaixo) e o cursor de B some. Qual das duas acontece depende só de a lista
+//     de A terminar ou parar; o resultado para B é o mesmo.
 //
 // A causa do que continua é outra: `gravarCursor` e `limparCursor` não conferem
 // de quem é o cursor antes de escrever — há um cursor só por contato, e ele é do
@@ -856,65 +864,28 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   if (isQuickReply) {
     const payload = msg.quick_reply!.payload!;
     if (payload.startsWith("AUTO:")) {
-      // O toque É a resposta que a `dm` de resposta rápida esperava: retoma do
-      // passo SEGUINTE ao que ficou gravado.
-      //
-      // Duas premissas sustentam esse "+1", e as duas precisam estar ditas:
-      //
-      // A PRIMEIRA é que o cursor seja desta automação — a do botão. Ela não
-      // vale sozinha, é IMPOSTA aqui por `cursorDesta`: o índice de outra
-      // automação seria uma posição em outra lista, e somar 1 a ele pularia
-      // passos desta (o portão de follow inclusive) ou apontaria para além do
-      // fim. Cursor de outra automação vira null e cai no caso de baixo.
-      //
-      // A SEGUNDA é o que null significa, e aqui não há como decidir: pode ser
-      // "nunca começou" (contato de antes desta versão, cursor nunca gravado)
-      // ou "o fluxo TERMINOU" — `executarFluxo` limpa o cursor ao chegar ao
-      // fim da lista, e o botão continua tocável na mensagem antiga. Não dá
-      // para separar os dois pela coluna, então o começo é o único ponto de
-      // partida afirmável: repetir a lista é recuperável (a deduplicação por
-      // `passoKey` segura o dia), começar no meio às cegas não é.
+      // Onde a lista retoma é decisão pura, e ela mora em `retomadaDoBotao`
+      // (lib/steps.ts) — com o porquê de cada ramo e com teste. Aqui era uma
+      // expressão solta dentro de `server-only`, que nenhum teste alcança, e foi
+      // ela que entregou o link a quem não segue: o `+1` valia para a `dm` de
+      // resposta rápida, mas o cursor também pode estar no PORTÃO, e o botão
+      // antigo da boas-vindas continua tocável.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(5));
       if (auto) {
-        const indice = cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id);
-        await executarFluxo(account, auto, senderId, indice === null ? 0 : indice + 1);
+        const cursor = await lerCursor(account.ig_user_id, senderId);
+        await executarFluxo(account, auto, senderId, retomadaDoBotao(cursor, auto.id, auto.steps));
       }
     } else if (payload.startsWith("FOLLOW:")) {
-      // "Já sigo!" — consulta a API de novo. Só passa se realmente seguir.
-      // O passo de follow é reavaliado, então retoma DELE, não do seguinte.
-      //
-      // Mesma exigência do ramo acima: o índice só serve se for desta
-      // automação. Sem cursor próprio, porém, o ponto de partida NÃO é o zero,
-      // e é aqui que este ramo difere do `AUTO:` de cima: o payload
-      // `FOLLOW:<id>` só existe porque o portão desta automação foi entregue,
-      // então o toque AFIRMA onde a pessoa está. Retoma do portão DESTA lista.
-      //
-      // O zero era no-op para toda lista que o formulário grava, e a razão é
-      // estrutural: a boas-vindas é obrigatória, vem sempre antes do portão e
-      // sempre com rótulo e sem url — ou seja, parada dura. `interpretar` a
-      // partir do zero parava NELA e nunca chegava ao portão. Pior, gravava o
-      // cursor na boas-vindas, e o toque seguinte encontrava esse cursor (agora
-      // desta automação) e parava no mesmo lugar: o botão "Já sigo!" nunca mais
-      // funcionava.
-      //
-      // Por que retomar do portão é seguro:
-      //   o portão não é pulado — `resolverFollow` reconsulta a Meta ali, e
-      //     quem não segue continua barrado exatamente como antes;
-      //   se o fluxo já tinha TERMINADO (cursor limpo), retomar do portão
-      //     reentrega o que vem depois dele. É recuperável pelo mesmo argumento
-      //     que o ramo `AUTO:` usa para escolher o zero — a deduplicação por
-      //     `passoKey` segura o dia — e é a resposta sã a quem acabou de tocar
-      //     em "Já sigo!": hoje essa pessoa não recebe nada;
-      //   o `?? 0` final só é alcançado por lista SEM portão nenhum, montada à
-      //     mão (o formulário não produz `FOLLOW:` sem `pedir_follow`), e aí o
-      //     zero é mesmo o único ponto afirmável.
+      // "Já sigo!" — `resolverFollow` consulta a API de novo, então só passa
+      // quem realmente seguir. De onde a lista retoma, e o preço de cada ramo
+      // dessa escolha, está em `retomadaDoFollow` (lib/steps.ts), junto dos
+      // testes. Os dois ramos de resposta rápida são uma chamada cada de
+      // propósito: a assimetria entre eles é regra de produto, e regra de
+      // produto sem teste foi o que quebrou duas vezes nesta branch.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(7));
       if (auto) {
-        const indice =
-          cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id) ??
-          indiceDoPortao(auto.steps) ??
-          0;
-        await executarFluxo(account, auto, senderId, indice);
+        const cursor = await lerCursor(account.ig_user_id, senderId);
+        await executarFluxo(account, auto, senderId, retomadaDoFollow(cursor, auto.id, auto.steps));
       }
     }
     return;
