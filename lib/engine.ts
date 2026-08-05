@@ -11,7 +11,7 @@ import {
 import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
-import { interpretar, type Passo, type AcaoEnfileirar } from "./steps";
+import { interpretar, passoEsperado, type AcaoEnfileirar } from "./steps";
 // `welcomeMessageKey` não é mais importado aqui: era a chave do enfileiramento
 // de boas-vindas por coluna, que saiu. Ela continua em lib/dedupe.ts, com teste,
 // porque a fila antiga ainda tem linhas gravadas com esse prefixo.
@@ -512,11 +512,18 @@ async function enfileirarPasso(
     // responder. Numa automação de DM este passo simplesmente não acontece —
     // e isso é comportamento, não erro, então não vira `step_ignorado`.
     if (!contexto.commentId) return;
+    // O sorteio pode sair vazio: `conferir` (lib/steps.ts) só exige que a lista
+    // não esteja vazia, então `{"textos":[""]}` passa na validação. A Meta
+    // recusa comentário sem texto com 400, e o item viraria `failed` em
+    // Atividade sem que ninguém tivesse escrito nada errado de propósito.
+    // Melhor não enfileirar — a resposta pública é enfeite, não o fluxo.
+    const texto = pickRandom(p.textos);
+    if (!texto?.trim()) return;
     await enqueue({
       ...base,
       kind: "comment_reply",
       comment_id: contexto.commentId,
-      payload: { text: pickRandom(p.textos) },
+      payload: { text: texto },
       dedupe_key: commentReplyKey(contexto.commentId),
     });
     return;
@@ -655,6 +662,34 @@ async function shouldFallbackFollowup(
   return Boolean(rows[0]?.welcomed) && !rows[0]?.linked;
 }
 
+// De qual passo o fallback retoma. Null quando não dá para afirmar.
+//
+// `shouldFallbackFollowup` respondeu "já houve boas-vindas e o link não saiu", e
+// a intenção sempre foi MANDAR O LINK — não recomeçar a conversa.
+//
+// O ponto de retomada é dedutível, sem adivinhação: `interpretar` a partir do
+// zero enfileira tudo até o primeiro passo de espera e para NELE. Como a
+// boas-vindas comprovadamente saiu, tudo até esse passo já foi entregue — ele é
+// o último entregue, e o que veio depois nunca chegou a ser enfileirado. Então:
+//
+//   `dm` de resposta rápida → retoma do SEGUINTE. O que ela esperava era o
+//     toque no botão, que não veio; o texto que a pessoa mandou vale como
+//     resposta, do mesmo jeito que no ramo do cursor.
+//   portão de follow ou pedido de e-mail → retoma DELE MESMO, para o portão
+//     reconsultar a Meta e o e-mail ser reavaliado. Pular entregaria o link a
+//     quem não seguiu.
+//
+// Sem passo de espera nenhum, a lista teria sido enfileirada inteira — link
+// incluído — e `shouldFallbackFollowup` não teria dito sim. Se ainda assim
+// acontecer, não retoma nada: repetir a lista manda mensagem repetida para
+// pessoa real, e é justamente isso que esta correção existe para evitar.
+function retomadaDoFallback(steps: unknown): number | null {
+  const { pararEm } = interpretar(steps, 0);
+  if (pararEm === null) return null;
+  const passo = passoEsperado(steps, pararEm);
+  return passo?.tipo === "dm" ? pararEm + 1 : pararEm;
+}
+
 export async function handleCommentEvent(entryId: string | undefined, value: CommentValue) {
   const account = await resolveAccount(entryId);
   if (!account) return;
@@ -729,8 +764,11 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
     const payload = msg.quick_reply!.payload!;
     if (payload.startsWith("AUTO:")) {
       // O toque É a resposta que a `dm` de resposta rápida esperava: retoma do
-      // passo SEGUINTE ao que ficou gravado. Sem cursor, do começo — o botão
-      // pode ter vindo da mensagem de boas-vindas, que sai fora da lista.
+      // passo SEGUINTE ao que ficou gravado. Sem cursor, do começo: a
+      // boas-vindas é um passo da lista como qualquer outro e sempre grava o
+      // cursor ao parar, então cursor nulo aqui é botão de uma mensagem antiga
+      // (fluxo já concluído, cursor limpo, ou contato de antes desta versão) —
+      // e o começo é o único ponto de partida que dá para afirmar.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(5));
       const cursor = await lerCursor(account.ig_user_id, senderId);
       if (auto) await executarFluxo(account, auto, senderId, cursor === null ? 0 : cursor + 1);
@@ -746,6 +784,13 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
 
   const text = msg.text ?? "";
 
+  // A palavra-chave é resolvida ANTES do cursor, embora só seja usada depois
+  // dele: o ramo do cursor precisa saber se esta mensagem é, na verdade, o
+  // gatilho de outra automação (ver ali embaixo).
+  const automations = await activeAutomations(account.ig_user_id);
+  const trigger = isStoryReply ? "story" : "dm";
+  const auto = findMatch(automations, trigger, text, msg.reply_to?.story?.id);
+
   // Esta pessoa está parada em algum passo?
   const estado = (await sql().query(
     `select flow_step_index, last_automation_id from contacts
@@ -754,49 +799,77 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   )) as { flow_step_index: number | null; last_automation_id: string | null }[];
 
   const parado = estado[0];
-  if (parado?.flow_step_index !== null && parado?.flow_step_index !== undefined) {
-    const auto = parado.last_automation_id
+  const indiceParado = parado?.flow_step_index ?? null;
+  if (indiceParado !== null) {
+    const autoParada = parado.last_automation_id
       ? await loadAutomation(account.ig_user_id, parado.last_automation_id)
       : undefined;
-    if (auto) {
-      const passo = (auto.steps as Passo[] | undefined)?.[parado.flow_step_index];
 
-      if (passo?.tipo === "pedir_email") {
-        const email = extractEmail(text);
-        if (!email) {
-          // Não parecia e-mail: pede de novo, uma vez por mensagem recebida.
-          await enqueue({
-            account_id: account.ig_user_id,
-            kind: "dm_email_ask",
-            contact_ig_id: senderId,
-            automation_id: auto.id,
-            payload: { text: "Acho que esse e-mail saiu errado 🤔 Me manda de novo, só o e-mail." },
-            dedupe_key: emailAnswerKey(msg.mid, senderId, Date.now()),
-          });
-          return;
+    // Sem automação carregável não há passo para retomar — ela foi desativada
+    // ou apagada. Voltar daqui deixaria o `flow_step_index` gravado PARA
+    // SEMPRE, porque nada mais o limpa: a pessoa ficaria surda a toda palavra-
+    // chave, de toda automação, até alguém mexer no banco. Automação desativada
+    // não pode sequestrar o contato: limpa o cursor e deixa o evento seguir.
+    if (!autoParada) {
+      await limparCursor(account.ig_user_id, senderId);
+    } else {
+      // O passo vem CRU do banco, então passa pela mesma validação que o
+      // interpretador faz — e `passoEsperado` ainda confirma que ele espera
+      // alguma coisa. Undefined aqui é cursor obsoleto (lista editada depois de
+      // gravado, passo inválido, índice que não existe mais): não há resposta a
+      // esperar, então o cursor sai da frente e o evento segue.
+      const passo = passoEsperado(autoParada.steps, indiceParado);
+
+      // Este ramo só pode CAPTURAR a mensagem quando ela é mesmo a resposta do
+      // passo esperado. O critério, por tipo de passo:
+      //   pedir_email  → a mensagem é candidata a e-mail. Captura.
+      //   pedir_follow → qualquer mensagem vale como "quero continuar". Captura.
+      //   dm de resposta rápida → o que ela espera é o TOQUE no botão, não
+      //     texto. Então só captura o que não for gatilho de outra automação:
+      //     toda boas-vindas estaciona o cursor, e sem esta condição quem
+      //     recebeu a boas-vindas da automação A e não tocou no botão ficaria
+      //     preso — mandar a palavra-chave da automação B seria lido como
+      //     "quero continuar em A", e B nunca dispararia.
+      if (!passo) {
+        await limparCursor(account.ig_user_id, senderId);
+      } else if (passo.tipo === "dm" && auto) {
+        // Não é resposta ao passo: é o gatilho de outra automação. Cai fora do
+        // ramo e segue para o fluxo normal, que reinicia naquela automação. O
+        // cursor não precisa ser limpo aqui — `executarFluxo` da automação nova
+        // o reescreve (ou o apaga, se a lista terminar).
+      } else {
+        if (passo.tipo === "pedir_email") {
+          const email = extractEmail(text);
+          if (!email) {
+            // Não parecia e-mail: pede de novo, uma vez por mensagem recebida.
+            await enqueue({
+              account_id: account.ig_user_id,
+              kind: "dm_email_ask",
+              contact_ig_id: senderId,
+              automation_id: autoParada.id,
+              payload: {
+                text: "Acho que esse e-mail saiu errado 🤔 Me manda de novo, só o e-mail.",
+              },
+              dedupe_key: emailAnswerKey(msg.mid, senderId, Date.now()),
+            });
+            return;
+          }
+          await sql().query(
+            `update contacts set email = $3 where account_id = $1 and ig_id = $2`,
+            [account.ig_user_id, senderId, email]
+          );
         }
-        await sql().query(
-          `update contacts set email = $3 where account_id = $1 and ig_id = $2`,
-          [account.ig_user_id, senderId, email]
-        );
+
+        // Retoma do passo seguinte — menos no portão de follow, que retoma DELE
+        // MESMO, para `resolverFollow` consultar a Meta de novo. O portão só é
+        // portão se cada tentativa reconsultar: retomando do seguinte, bastaria
+        // mandar "ok" para pular o passo e receber o link sem nunca ter seguido.
+        const retomarDe = passo.tipo === "pedir_follow" ? indiceParado : indiceParado + 1;
+        await executarFluxo(account, autoParada, senderId, retomarDe);
+        return;
       }
-
-      // Qualquer mensagem vale como "quero continuar": retoma do passo seguinte.
-      //
-      // Menos no portão de follow, que retoma DELE MESMO, para `resolverFollow`
-      // consultar a Meta de novo. O portão só é portão se cada tentativa
-      // reconsultar: retomando do seguinte, bastaria mandar "ok" para pular o
-      // passo e receber o link sem nunca ter seguido.
-      const retomarDe =
-        passo?.tipo === "pedir_follow" ? parado.flow_step_index : parado.flow_step_index + 1;
-      await executarFluxo(account, auto, senderId, retomarDe);
     }
-    return;
   }
-
-  const automations = await activeAutomations(account.ig_user_id);
-  const trigger = isStoryReply ? "story" : "dm";
-  const auto = findMatch(automations, trigger, text, msg.reply_to?.story?.id);
 
   if (auto) {
     // Marca de quem é a conversa a partir de agora. Ficava dentro do `if
@@ -820,18 +893,24 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
     return;
   }
 
-  // Sem palavra-chave, mas a pessoa respondeu com texto em vez de tocar
-  // no botão: se a última automação dela ainda está ativa, segue o fluxo.
-  // Do começo da lista, porque não há cursor — quem tinha cursor já foi
-  // atendido lá em cima. Repetir não duplica: as chaves de deduplicação são
-  // por passo/pessoa/dia.
+  // Sem palavra-chave, mas a pessoa respondeu com texto em vez de tocar no
+  // botão: se a última automação dela ainda está ativa e a boas-vindas já saiu
+  // sem o link, segue o fluxo DE ONDE ELE PAROU — não do começo.
+  //
+  // Do começo era o que estava aqui, e reinterpretava a lista inteira: a
+  // boas-vindas voltava para a fila e o fluxo parava nela de novo, exatamente a
+  // mensagem que a pessoa já tinha recebido, e o link continuava sem sair. E
+  // repetir DUPLICA de verdade: a boas-vindas de um fluxo por comentário é
+  // gravada com `privateReplyKey(commentId)`, e a repetição sai com `passoKey`
+  // (por passo/pessoa/dia) — chaves diferentes, nada colide, dois envios.
   const lastAuto = estado[0]?.last_automation_id;
   const autoAnterior = lastAuto ? automations.find((a) => a.id === lastAuto) : undefined;
   if (
     autoAnterior &&
     (await shouldFallbackFollowup(account.ig_user_id, autoAnterior.id, senderId))
   ) {
-    await executarFluxo(account, autoAnterior, senderId, 0);
+    const de = retomadaDoFallback(autoAnterior.steps);
+    if (de !== null) await executarFluxo(account, autoAnterior, senderId, de);
   }
 }
 

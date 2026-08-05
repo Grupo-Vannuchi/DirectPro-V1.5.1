@@ -63,11 +63,21 @@ function montarPassos(f: {
   for (const fu of f.followups) {
     if (fu.delay_minutes > 0) passos.push({ tipo: "esperar", minutos: fu.delay_minutes });
     if (fu.text.trim()) {
+      // O rótulo do botão só entra quando existe url: sem destino não há botão
+      // de link para rotular.
+      //
+      // O formulário tem rótulo com padrão NÃO vazio ("Abrir link") e url
+      // opcional, então uma automação salva sem link produzia
+      // `{tipo:"dm", texto, botao_label:"Abrir link"}` — rótulo e sem url, que é
+      // exatamente a forma de RESPOSTA RÁPIDA. O fluxo parava ali esperando o
+      // toque num botão que não leva a lugar nenhum, e o lembrete nunca saía.
+      // No motor antigo essa mesma mensagem era texto puro e não esperava nada.
+      const url = fu.url || undefined;
       passos.push({
         tipo: "dm",
         texto: fu.text,
-        botao_label: fu.button_label || undefined,
-        url: fu.url || undefined,
+        botao_label: url ? fu.button_label || undefined : undefined,
+        url,
       });
     }
   }

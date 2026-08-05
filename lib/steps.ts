@@ -80,6 +80,26 @@ function conferir(p: unknown): { passo?: Passo; motivo?: string } {
   return { motivo: `tipo desconhecido: ${String(tipo)}` };
 }
 
+// O passo em que o cursor de um contato está parado — validado, e confirmado
+// como passo de espera.
+//
+// Existe porque quem lê o cursor (lib/engine.ts) lê `steps[i]` CRU do banco, e
+// confiar no `tipo` sem passar pela mesma validação do interpretador diverge do
+// que o fluxo faz: um `pedir_email` sem texto é ignorado por `interpretar` — e
+// portanto nunca foi enviado —, mas o ramo do cursor o trataria como pedido de
+// e-mail e consumiria a mensagem da pessoa como endereço.
+//
+// Devolve undefined quando o índice não existe mais, quando o passo não passa
+// na validação, ou quando ele não espera resposta nenhuma. Esse último caso é
+// cursor obsoleto: a lista foi editada depois de o cursor ser gravado, e não há
+// resposta a esperar naquele índice.
+export function passoEsperado(passos: unknown, indice: number): Passo | undefined {
+  if (!Array.isArray(passos)) return undefined;
+  const { passo } = conferir(passos[indice]);
+  if (!passo || !esperaResposta(passo)) return undefined;
+  return passo;
+}
+
 // Percorre a lista a partir de `deIndice` e diz o que fazer.
 //
 // `esperar` NÃO é enfileirado: ele soma no atraso dos passos seguintes. É assim

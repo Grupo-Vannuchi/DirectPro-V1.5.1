@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { interpretar } from "../lib/steps";
+import { interpretar, passoEsperado } from "../lib/steps";
 
 describe("interpretar", () => {
   it("enfileira uma sequência simples até o fim", () => {
@@ -145,5 +145,42 @@ describe("interpretar", () => {
     );
     expect(r.enfileirar[0].atrasoSegundos).toBe(0);
     expect(r.ignorados[0].motivo).toBe("esperar com minutos inválido");
+  });
+});
+
+describe("passoEsperado", () => {
+  it("devolve o passo quando ele espera resposta", () => {
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_follow", texto: "me segue", botao_label: "já sigo" },
+      { tipo: "pedir_email", texto: "seu e-mail?" },
+    ];
+    expect(passoEsperado(passos, 0)?.tipo).toBe("dm");
+    expect(passoEsperado(passos, 1)?.tipo).toBe("pedir_follow");
+    expect(passoEsperado(passos, 2)?.tipo).toBe("pedir_email");
+  });
+
+  it("não devolve passo que não espera nada", () => {
+    // Cursor obsoleto: a lista foi editada depois de ele ser gravado.
+    const passos = [
+      { tipo: "dm", texto: "o link", botao_label: "abrir", url: "https://x.y" },
+      { tipo: "dm", texto: "texto puro" },
+    ];
+    expect(passoEsperado(passos, 0)).toBeUndefined();
+    expect(passoEsperado(passos, 1)).toBeUndefined();
+  });
+
+  it("não devolve passo que o interpretador ignoraria", () => {
+    // O ramo do cursor não pode tratar como pedido de e-mail um passo que nunca
+    // chegou a ser enviado: ele consumiria a mensagem da pessoa como endereço.
+    expect(passoEsperado([{ tipo: "pedir_email" }], 0)).toBeUndefined();
+    expect(passoEsperado([{ tipo: "pedir_follow", botao_label: "x" }], 0)).toBeUndefined();
+    expect(passoEsperado([{ tipo: "inventado" }], 0)).toBeUndefined();
+  });
+
+  it("índice inexistente ou lista que não é lista devolve undefined", () => {
+    expect(passoEsperado([{ tipo: "dm", texto: "oi", botao_label: "b" }], 9)).toBeUndefined();
+    expect(passoEsperado(null, 0)).toBeUndefined();
+    expect(passoEsperado(undefined, 0)).toBeUndefined();
   });
 });

@@ -39,6 +39,12 @@ const EVENT: Record<string, Badge> = {
     label: "Não deu para conferir o seguidor",
     className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-400",
   },
+  // Um passo da automação estava mal montado e foi pulado. O fluxo seguiu, mas
+  // alguém precisa arrumar a automação — por isso aparece nomeado.
+  step_ignorado: {
+    label: "Passo da automação ignorado",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-400",
+  },
 };
 
 const UNKNOWN: Badge = {
