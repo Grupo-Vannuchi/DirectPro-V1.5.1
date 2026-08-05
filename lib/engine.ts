@@ -690,6 +690,37 @@ function retomadaDoFallback(steps: unknown): number | null {
   return passo?.tipo === "dm" ? pararEm + 1 : pararEm;
 }
 
+// Quem está parado esperando o toque num botão pode ser interrompido por outra
+// automação? Só quando duas coisas valem ao mesmo tempo.
+//
+// A PRIMEIRA é que a automação casada seja OUTRA. Comparar por id, e não só
+// perguntar "casou com alguma?", é o ponto: quando a pessoa repete a palavra-
+// chave da automação em que ela já está parada, isso não é pedido de outra
+// coisa, é a mesma conversa continuando — e ela tem que retomar do cursor. Sem
+// a comparação, esse caso caía no fluxo normal e reinterpretava a lista do
+// índice 0: parava de novo na boas-vindas, regravava o cursor em 0 e não
+// enfileirava nada, porque a boas-vindas do dia já estava na fila com a mesma
+// `passoKey` e o `on conflict do nothing` engolia o item. Nenhuma mensagem
+// saía, o cursor não andava, e cada nova mensagem repetia o mesmo nada — até
+// virar o dia, quando a chave mudava de balde e a boas-vindas saía OUTRA VEZ
+// para uma pessoa real, com o link ainda sem sair. Basta a pessoa repetir a
+// palavra-chave para cair nisso, e a palavra-chave é justamente o que ela
+// acabou de ler na boas-vindas.
+//
+// A SEGUNDA é que a automação nova NÃO seja `match_type: "any"`. A distinção é
+// entre "pediu outra coisa" e "caiu na rede": palavra-chave específica é um
+// pedido explícito — a pessoa digitou aquilo, e interromper é atendê-la. Já
+// "Qualquer texto" não é escolha de ninguém, é rede de arrasto: casa com toda
+// mensagem, de todo mundo, sempre. Se ela pudesse interromper, sequestraria
+// todo contato parado no meio de qualquer outro fluxo, e ninguém chegaria ao
+// link. Pega-tudo serve para quem não tem dono; quem está no meio de uma
+// conversa já tem.
+function interrompeOFluxo(casada: Automation | undefined, parada: Automation): boolean {
+  if (!casada) return false;
+  if (casada.id === parada.id) return false;
+  return casada.match_type !== "any";
+}
+
 export async function handleCommentEvent(entryId: string | undefined, value: CommentValue) {
   const account = await resolveAccount(entryId);
   if (!account) return;
@@ -825,14 +856,14 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
       //   pedir_email  → a mensagem é candidata a e-mail. Captura.
       //   pedir_follow → qualquer mensagem vale como "quero continuar". Captura.
       //   dm de resposta rápida → o que ela espera é o TOQUE no botão, não
-      //     texto. Então só captura o que não for gatilho de outra automação:
+      //     texto. Então só deixa passar o que for gatilho de OUTRA automação:
       //     toda boas-vindas estaciona o cursor, e sem esta condição quem
       //     recebeu a boas-vindas da automação A e não tocou no botão ficaria
       //     preso — mandar a palavra-chave da automação B seria lido como
       //     "quero continuar em A", e B nunca dispararia.
       if (!passo) {
         await limparCursor(account.ig_user_id, senderId);
-      } else if (passo.tipo === "dm" && auto) {
+      } else if (passo.tipo === "dm" && interrompeOFluxo(auto, autoParada)) {
         // Não é resposta ao passo: é o gatilho de outra automação. Cai fora do
         // ramo e segue para o fluxo normal, que reinicia naquela automação. O
         // cursor não precisa ser limpo aqui — `executarFluxo` da automação nova
