@@ -30,6 +30,17 @@ export const emailAskKey = (automationId: string, contactIgId: string, dia: stri
 export const followupKey = (followupId: string, contactIgId: string, dia: string) =>
   `fu:${followupId}:${contactIgId}:${dia}`;
 
+// Um passo por pessoa por dia. O índice entra na chave porque a mesma automação
+// pode ter vários passos do mesmo tipo — dois lembretes, três DMs.
+export function passoKey(
+  automationId: string,
+  contactIgId: string,
+  indice: number,
+  bucket: string
+): string {
+  return `passo:${automationId}:${contactIgId}:${indice}:${bucket}`;
+}
+
 // Os que nascem de uma mensagem recebida usam o id dela (mid). Quando a Meta
 // não manda o mid, cai no par remetente+instante: não deduplica de verdade, mas
 // é melhor que uma chave nula, que faria o UNIQUE barrar envios legítimos de

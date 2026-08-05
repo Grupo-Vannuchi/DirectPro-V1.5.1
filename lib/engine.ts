@@ -6,18 +6,18 @@ import {
   listAccounts,
   Account,
   Automation,
-  Followup,
   QueueItem,
 } from "./db";
 import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
+import { interpretar, type Passo, type AcaoEnfileirar } from "./steps";
 import {
   privateReplyKey,
   commentReplyKey,
   followGateKey,
   emailAskKey,
-  followupKey,
+  passoKey,
   emailAnswerKey,
   welcomeMessageKey,
   storyReactionKey,
@@ -266,51 +266,182 @@ async function loadAutomation(
 // (e não chamar a atenção da Meta).
 const MAX_FOLLOW_REQUESTS = 5;
 
-async function clearFollowState(accountId: string, igId: string) {
+// Executa o fluxo desta automação a partir de `deIndice`.
+//
+// A sequência não está mais aqui: ela vem de `auto.steps`, e quem decide o que
+// fazer é o interpretador puro de lib/steps.ts. Esta função é só a casca que
+// toca banco, chama a Meta e enfileira.
+// `contexto` carrega os ids que só o gatilho conhece. Sem ele, `resposta_publica`
+// e `reagir_story` não teriam como ser enfileirados aqui e continuariam tratados
+// à parte, lendo as colunas antigas — a lista teria dois passos decorativos e o
+// fluxo não seria dado de verdade.
+export type ContextoGatilho = { commentId?: string; messageId?: string };
+
+async function executarFluxo(
+  account: Account,
+  auto: Automation,
+  contactIgId: string,
+  deIndice: number,
+  contexto: ContextoGatilho = {}
+): Promise<void> {
+  const r = interpretar(auto.steps, deIndice);
+
+  // Passo mal montado vira linha em Atividade, não exceção. Automação quebrada
+  // não pode derrubar o webhook: a Meta reenviaria o evento por 36 horas.
+  for (const ig of r.ignorados) {
+    await logEvent(account.ig_user_id, "step_ignorado", {
+      automation_id: auto.id,
+      indice: ig.indice,
+      motivo: ig.motivo,
+    });
+  }
+
+  for (const acao of r.enfileirar) {
+    const p = acao.passo;
+
+    if (p.tipo === "pedir_follow") {
+      // O portão é o único passo que consulta a Meta antes de decidir.
+      const passou = await resolverFollow(account, auto, contactIgId, p, acao.indice);
+      if (passou) continue;
+      await gravarCursor(account.ig_user_id, contactIgId, auto.id, acao.indice);
+      return;
+    }
+
+    if (p.tipo === "pedir_email") {
+      const rows = (await sql().query(
+        `select email from contacts where account_id = $1 and ig_id = $2`,
+        [account.ig_user_id, contactIgId]
+      )) as { email: string | null }[];
+      if (rows[0]?.email) continue;
+      await enqueue({
+        account_id: account.ig_user_id,
+        kind: "dm_email_ask",
+        contact_ig_id: contactIgId,
+        automation_id: auto.id,
+        payload: { text: p.texto },
+        dedupe_key: emailAskKey(auto.id, contactIgId, dayBucket()),
+      });
+      await gravarCursor(account.ig_user_id, contactIgId, auto.id, acao.indice);
+      return;
+    }
+
+    await enfileirarPasso(account, auto, contactIgId, acao, contexto);
+  }
+
+  // A lista acabou: esta pessoa não está mais no meio de nada.
+  await limparCursor(account.ig_user_id, contactIgId);
+}
+
+async function gravarCursor(
+  accountId: string,
+  contactIgId: string,
+  automationId: string,
+  indice: number
+) {
   await sql().query(
-    `update contacts set
-       awaiting = case when awaiting = 'follow' then null else awaiting end,
-       follow_attempts = 0
+    `update contacts set flow_step_index = $3, last_automation_id = $4
      where account_id = $1 and ig_id = $2`,
-    [accountId, igId]
+    [accountId, contactIgId, indice, automationId]
   );
 }
 
-// Portão de seguidor: devolve true só quando a pessoa REALMENTE segue.
-// Enquanto não seguir, marca o estado, repete o pedido (com moderação) e
-// devolve false — o próximo passo do fluxo não sai.
-async function followGate(
+async function limparCursor(accountId: string, contactIgId: string) {
+  await sql().query(
+    `update contacts set flow_step_index = null where account_id = $1 and ig_id = $2`,
+    [accountId, contactIgId]
+  );
+}
+
+async function lerCursor(accountId: string, contactIgId: string): Promise<number | null> {
+  const rows = (await sql().query(
+    `select flow_step_index from contacts where account_id = $1 and ig_id = $2`,
+    [accountId, contactIgId]
+  )) as { flow_step_index: number | null }[];
+  return rows[0]?.flow_step_index ?? null;
+}
+
+// Enfileira um passo que não espera resposta.
+async function enfileirarPasso(
   account: Account,
   auto: Automation,
-  contactIgId: string
-): Promise<boolean> {
-  if (!auto.require_follow) return true;
+  contactIgId: string,
+  acao: AcaoEnfileirar,
+  contexto: ContextoGatilho
+) {
+  const p = acao.passo;
+  const base = {
+    account_id: account.ig_user_id,
+    contact_ig_id: contactIgId,
+    automation_id: auto.id,
+    delaySeconds: acao.atrasoSegundos,
+  };
 
+  if (p.tipo === "dm") {
+    await enqueue({
+      ...base,
+      kind: "dm_link",
+      payload: { text: p.texto, button_label: p.botao_label ?? null, url: p.url ?? null },
+      dedupe_key: passoKey(auto.id, contactIgId, acao.indice, dayBucket()),
+    });
+    return;
+  }
+
+  if (p.tipo === "resposta_publica") {
+    // Só faz sentido quando o gatilho foi comentário: sem o id, não há o que
+    // responder. Numa automação de DM este passo simplesmente não acontece —
+    // e isso é comportamento, não erro, então não vira `step_ignorado`.
+    if (!contexto.commentId) return;
+    await enqueue({
+      ...base,
+      kind: "comment_reply",
+      comment_id: contexto.commentId,
+      payload: { text: pickRandom(p.textos) },
+      dedupe_key: commentReplyKey(contexto.commentId),
+    });
+    return;
+  }
+
+  if (p.tipo === "reagir_story") {
+    // Mesma lógica: sem mensagem para reagir, o passo não acontece.
+    if (!contexto.messageId) return;
+    await enqueue({
+      ...base,
+      kind: "story_reaction",
+      payload: { message_id: contexto.messageId, reaction: p.emoji },
+      dedupe_key: storyReactionKey(contexto.messageId),
+    });
+    return;
+  }
+}
+
+// Resolve o passo de follow: consulta a Meta e decide se o fluxo segue.
+// Devolve true quando pode continuar.
+async function resolverFollow(
+  account: Account,
+  auto: Automation,
+  contactIgId: string,
+  passo: { texto: string; botao_label: string },
+  indice: number
+): Promise<boolean> {
   const segue = await checkFollowsAccount(contactIgId, account.access_token);
 
   if (segue === null) {
     // A Meta não informou. Barrar aqui deixaria TODA a base presa caso o campo
-    // fique indisponível (permissão, instabilidade) — e o dono do painel só
-    // descobriria pelos clientes reclamando. Então libera e registra, para o
-    // erro aparecer em Atividade em vez de virar uma automação morta e muda.
+    // fique indisponível — e o dono do painel só descobriria pelos clientes
+    // reclamando. Libera e registra, para o erro aparecer em Atividade.
     await logEvent(account.ig_user_id, "follow_check_unavailable", {
       contact_ig_id: contactIgId,
       automation_id: auto.id,
+      // qual passo da lista foi liberado sem confirmação
+      indice,
     });
-    await clearFollowState(account.ig_user_id, contactIgId);
     return true;
   }
+  if (segue) return true;
 
-  if (segue) {
-    await clearFollowState(account.ig_user_id, contactIgId);
-    return true;
-  }
-
-  // Ainda não segue: guarda o estado e conta a tentativa
   const rows = (await sql().query(
-    `update contacts set awaiting = 'follow', follow_attempts = follow_attempts + 1
-     where account_id = $1 and ig_id = $2
-     returning follow_attempts`,
+    `update contacts set follow_attempts = follow_attempts + 1
+     where account_id = $1 and ig_id = $2 returning follow_attempts`,
     [account.ig_user_id, contactIgId]
   )) as { follow_attempts: number }[];
   const tentativa = rows[0]?.follow_attempts ?? 1;
@@ -324,67 +455,15 @@ async function followGate(
       payload: {
         text:
           tentativa === 1
-            ? auto.follow_text || "Antes de te mandar o link, me segue lá no perfil 🙏"
+            ? passo.texto
             : "Ainda não consegui ver você na minha lista de seguidores 👀 Segue lá e toca no botão de novo.",
-        quick_reply_label: auto.follow_button_label || "Já sigo! ✅",
+        quick_reply_label: passo.botao_label,
         quick_reply_payload: `FOLLOW:${auto.id}`,
       },
-      // a tentativa entra na chave: cada pedido é um item novo na fila
       dedupe_key: followGateKey(auto.id, contactIgId, dayBucket(), tentativa),
     });
   }
   return false;
-}
-
-// Decide qual é o PRÓXIMO passo do fluxo desta pessoa:
-// seguir o perfil → informar o e-mail → receber o link.
-// Cada etapa é opcional; sem nenhuma ligada, o link sai direto (como antes).
-async function advanceFlow(account: Account, auto: Automation, contactIgId: string) {
-  if (!(await followGate(account, auto, contactIgId))) return;
-
-  if (auto.ask_email) {
-    const rows = (await sql().query(
-      `select email from contacts where account_id = $1 and ig_id = $2`,
-      [account.ig_user_id, contactIgId]
-    )) as { email: string | null }[];
-    if (!rows[0]?.email) {
-      await sql().query(
-        `update contacts set awaiting = 'email' where account_id = $1 and ig_id = $2`,
-        [account.ig_user_id, contactIgId]
-      );
-      await enqueue({
-        account_id: account.ig_user_id,
-        kind: "dm_email_ask",
-        contact_ig_id: contactIgId,
-        automation_id: auto.id,
-        payload: {
-          text: auto.email_text || "Me manda seu melhor e-mail que eu te envio o link 👇",
-        },
-        dedupe_key: emailAskKey(auto.id, contactIgId, dayBucket()),
-      });
-      return;
-    }
-  }
-
-  await enqueueFollowups(account.ig_user_id, auto.id, contactIgId);
-}
-
-async function enqueueFollowups(accountId: string, automationId: string, contactIgId: string) {
-  const followups = (await sql().query(
-    `select * from followups where automation_id = $1 order by position asc`,
-    [automationId]
-  )) as Followup[];
-  for (const f of followups) {
-    await enqueue({
-      account_id: accountId,
-      kind: f.kind === "link" ? "dm_link" : "dm_reminder",
-      contact_ig_id: contactIgId,
-      automation_id: automationId,
-      payload: { text: f.text, button_label: f.button_label, url: f.url },
-      dedupe_key: followupKey(f.id, contactIgId, dayBucket()),
-      delaySeconds: f.delay_minutes * 60,
-    });
-  }
 }
 
 // Já houve boas-vindas recentes (e o link ainda não saiu)?
@@ -451,19 +530,10 @@ export async function handleCommentEvent(entryId: string | undefined, value: Com
     });
   }
 
-  // Resposta pública opcional no comentário (sorteia variação)
-  const publicReply = pickRandom(auto.public_replies);
-  if (publicReply) {
-    await enqueue({
-      account_id: account.ig_user_id,
-      kind: "comment_reply",
-      contact_ig_id: fromId,
-      automation_id: auto.id,
-      comment_id: commentId,
-      payload: { text: publicReply },
-      dedupe_key: commentReplyKey(commentId),
-    });
-  }
+  // O resto do fluxo é a lista: a resposta pública deixou de ser um caso à
+  // parte lido de `public_replies` e virou um passo como qualquer outro. O id
+  // do comentário vai junto porque só o gatilho o conhece.
+  await executarFluxo(account, auto, fromId, 0, { commentId });
 }
 
 export async function handleMessagingEvent(entryId: string | undefined, ev: MessagingEvent) {
@@ -500,74 +570,65 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
     const payload = msg.quick_reply!.payload!;
     if (payload.startsWith("AUTO:")) {
       const auto = await loadAutomation(account.ig_user_id, payload.slice(5));
-      if (auto) await advanceFlow(account, auto, senderId);
+      if (auto) await executarFluxo(account, auto, senderId, 0);
     } else if (payload.startsWith("FOLLOW:")) {
       // "Já sigo!" — consulta a API de novo. Só passa se realmente seguir.
+      // O passo de follow é reavaliado, então retoma DELE, não do seguinte.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(7));
-      if (auto) await advanceFlow(account, auto, senderId);
+      const doIndice = (await lerCursor(account.ig_user_id, senderId)) ?? 0;
+      if (auto) await executarFluxo(account, auto, senderId, doIndice);
     }
     return;
   }
 
   const text = msg.text ?? "";
 
-  // Estamos esperando o e-mail desta pessoa?
+  // Esta pessoa está parada em algum passo?
   const estado = (await sql().query(
-    `select awaiting, last_automation_id from contacts where account_id = $1 and ig_id = $2`,
+    `select flow_step_index, last_automation_id from contacts
+     where account_id = $1 and ig_id = $2`,
     [account.ig_user_id, senderId]
-  )) as { awaiting: string | null; last_automation_id: string | null }[];
+  )) as { flow_step_index: number | null; last_automation_id: string | null }[];
 
-  // Esperando que ela siga? Qualquer mensagem ("já segui", "pronto", "ok")
-  // vale como "quero continuar" e dispara nova consulta à API.
-  if (estado[0]?.awaiting === "follow") {
-    const auto = estado[0].last_automation_id
-      ? await loadAutomation(account.ig_user_id, estado[0].last_automation_id)
+  const parado = estado[0];
+  if (parado?.flow_step_index !== null && parado?.flow_step_index !== undefined) {
+    const auto = parado.last_automation_id
+      ? await loadAutomation(account.ig_user_id, parado.last_automation_id)
       : undefined;
-    if (auto) await advanceFlow(account, auto, senderId);
+    if (auto) {
+      const passo = (auto.steps as Passo[] | undefined)?.[parado.flow_step_index];
+
+      if (passo?.tipo === "pedir_email") {
+        const email = extractEmail(text);
+        if (!email) {
+          // Não parecia e-mail: pede de novo, uma vez por mensagem recebida.
+          await enqueue({
+            account_id: account.ig_user_id,
+            kind: "dm_email_ask",
+            contact_ig_id: senderId,
+            automation_id: auto.id,
+            payload: { text: "Acho que esse e-mail saiu errado 🤔 Me manda de novo, só o e-mail." },
+            dedupe_key: emailAnswerKey(msg.mid, senderId, Date.now()),
+          });
+          return;
+        }
+        await sql().query(
+          `update contacts set email = $3 where account_id = $1 and ig_id = $2`,
+          [account.ig_user_id, senderId, email]
+        );
+      }
+
+      // Qualquer mensagem vale como "quero continuar": retoma do passo seguinte.
+      await executarFluxo(account, auto, senderId, parado.flow_step_index + 1);
+    }
     return;
   }
 
-  if (estado[0]?.awaiting === "email") {
-    const email = extractEmail(text);
-    if (email) {
-      await sql().query(
-        `update contacts set email = $3, awaiting = null where account_id = $1 and ig_id = $2`,
-        [account.ig_user_id, senderId, email]
-      );
-      const auto = estado[0].last_automation_id
-        ? await loadAutomation(account.ig_user_id, estado[0].last_automation_id)
-        : undefined;
-      if (auto) await enqueueFollowups(account.ig_user_id, auto.id, senderId);
-      return;
-    }
-    // não parecia um e-mail: pede de novo, uma vez por mensagem recebida
-    await enqueue({
-      account_id: account.ig_user_id,
-      kind: "dm_email_ask",
-      contact_ig_id: senderId,
-      automation_id: estado[0].last_automation_id ?? undefined,
-      payload: { text: "Acho que esse e-mail saiu errado 🤔 Me manda de novo, só o e-mail." },
-      dedupe_key: emailAnswerKey(msg.mid, senderId, Date.now()),
-    });
-    return;
-  }
   const automations = await activeAutomations(account.ig_user_id);
   const trigger = isStoryReply ? "story" : "dm";
   const auto = findMatch(automations, trigger, text, msg.reply_to?.story?.id);
 
   if (auto) {
-    // Coraçãozinho na resposta de story, como no ManyChat
-    if (isStoryReply && auto.story_reaction && msg.mid) {
-      await enqueue({
-        account_id: account.ig_user_id,
-        kind: "story_reaction",
-        contact_ig_id: senderId,
-        automation_id: auto.id,
-        payload: { message_id: msg.mid, reaction: auto.story_reaction },
-        dedupe_key: storyReactionKey(msg.mid),
-      });
-    }
-
     // Conversa já aberta (a pessoa nos mandou mensagem) → DM direta
     if (auto.welcome_text) {
       await enqueue({
@@ -584,18 +645,26 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
       });
       await upsertContact(account.ig_user_id, senderId, { last_automation_id: auto.id });
     }
+
+    // O coraçãozinho na resposta de story deixou de ser caso à parte lido de
+    // `story_reaction` e virou passo da lista. O id da mensagem vai junto
+    // porque só o gatilho o conhece.
+    await executarFluxo(account, auto, senderId, 0, { messageId: msg.mid });
     return;
   }
 
   // Sem palavra-chave, mas a pessoa respondeu com texto em vez de tocar
   // no botão: se a última automação dela ainda está ativa, segue o fluxo.
+  // Do começo da lista, porque não há cursor — quem tinha cursor já foi
+  // atendido lá em cima. Repetir não duplica: as chaves de deduplicação são
+  // por passo/pessoa/dia.
   const lastAuto = estado[0]?.last_automation_id;
+  const autoAnterior = lastAuto ? automations.find((a) => a.id === lastAuto) : undefined;
   if (
-    lastAuto &&
-    automations.some((a) => a.id === lastAuto) &&
-    (await shouldFallbackFollowup(account.ig_user_id, lastAuto, senderId))
+    autoAnterior &&
+    (await shouldFallbackFollowup(account.ig_user_id, autoAnterior.id, senderId))
   ) {
-    await enqueueFollowups(account.ig_user_id, lastAuto, senderId);
+    await executarFluxo(account, autoAnterior, senderId, 0);
   }
 }
 
