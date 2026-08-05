@@ -396,10 +396,42 @@ async function enfileirarPasso(
   };
 
   if (p.tipo === "dm") {
+    // UM tipo de passo, TRÊS mensagens diferentes — e quem decide qual é a forma
+    // do próprio passo: a presença do rótulo de botão e a da url.
+    //
+    // Isto não é preferência de estilo, é o que o dreno sabe fazer. `processItem`
+    // manda todo `dm_link` por `linkMessage`, que sem url devolve TEXTO PURO —
+    // então enfileirar tudo como `dm_link`, como era feito aqui, apagava o botão
+    // de resposta rápida da mensagem de boas-vindas. E com o botão sumia o
+    // payload `AUTO:<id>`, que é o que retoma o fluxo quando a pessoa toca.
+    //
+    // Pior: `esperaResposta` (lib/steps.ts) PARA o fluxo justamente no `dm` com
+    // rótulo e sem url. Parar esperando um toque num botão que não foi enviado
+    // deixa a pessoa sem o que tocar e o fluxo travado para sempre.
+    //
+    // A regra, na mesma ordem em que `esperaResposta` decide parar:
+    //   rótulo e SEM url → resposta rápida (`dm_welcome`), o único caminho do
+    //     dreno que monta `quick_replies`. O payload volta no webhook como
+    //     `AUTO:<id da automação>`, e é ele que `handleMessagingEvent` lê para
+    //     continuar do passo seguinte ao que ficou no cursor.
+    //   COM url → botão de link (`dm_link`), que `linkMessage` transforma em
+    //     template de botão. Vale também sem rótulo: aí o título cai no padrão
+    //     "Abrir link" do próprio `linkMessage`, em vez de a url desaparecer da
+    //     mensagem — e `esperaResposta` também não para aqui, porque a pessoa
+    //     abre o link e a vida segue.
+    //   sem rótulo e sem url → texto puro, que é `dm_link` sem url: o mesmo
+    //     `linkMessage` devolve só `{ text }`.
+    const respostaRapida = Boolean(p.botao_label) && !p.url;
     await enqueue({
       ...base,
-      kind: "dm_link",
-      payload: { text: p.texto, button_label: p.botao_label ?? null, url: p.url ?? null },
+      kind: respostaRapida ? "dm_welcome" : "dm_link",
+      payload: respostaRapida
+        ? {
+            text: p.texto,
+            quick_reply_label: p.botao_label,
+            quick_reply_payload: `AUTO:${auto.id}`,
+          }
+        : { text: p.texto, button_label: p.botao_label ?? null, url: p.url ?? null },
       dedupe_key: passoKey(auto.id, contactIgId, acao.indice, dayBucket()),
     });
     return;
@@ -510,14 +542,14 @@ async function resolverFollow(
 // Já houve boas-vindas recentes (e o link ainda não saiu)?
 // Evita reenviar o link quando a pessoa só manda "obrigado" depois.
 //
-// ATENÇÃO: esta consulta ainda procura `private_reply`/`dm_welcome`, que eram os
-// tipos dos enfileiramentos de boas-vindas por coluna removidos daqui. Como as
-// boas-vindas agora saem como passo `dm` — e todo passo `dm` vira `dm_link` —,
-// para tráfego novo `welcomed` fica sempre falso e este fallback não dispara
-// mais. Não foi corrigido junto porque a regra nova ("a lista já começou para
-// esta pessoa") não é uma troca de nome de tipo: `dm_link` é ao mesmo tempo o
-// que este trecho chamava de boas-vindas e o que ele chamava de link, então os
-// dois `exists` passariam a olhar a mesma coisa. Precisa de decisão própria.
+// Os dois `exists` voltaram a olhar coisas diferentes agora que o passo `dm`
+// escolhe o tipo pela forma: o `dm` de resposta rápida (rótulo, sem url) é
+// `dm_welcome` e o de link é `dm_link`, exatamente a distinção que esta consulta
+// sempre pressupôs. Enquanto todo passo `dm` virava `dm_link`, `welcomed` ficava
+// sempre falso para tráfego novo e este fallback não disparava.
+//
+// `private_reply` continua na lista por causa das linhas antigas da fila, do
+// tempo em que as boas-vindas saíam por coluna e não por passo.
 async function shouldFallbackFollowup(
   accountId: string,
   automationId: string,
