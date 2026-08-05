@@ -660,11 +660,18 @@ por um executor único:
 // A sequência não está mais aqui: ela vem de `auto.steps`, e quem decide o que
 // fazer é o interpretador puro de lib/steps.ts. Esta função é só a casca que
 // toca banco, chama a Meta e enfileira.
+// `contexto` carrega os ids que só o gatilho conhece. Sem ele, `resposta_publica`
+// e `reagir_story` não teriam como ser enfileirados aqui e continuariam tratados
+// à parte, lendo as colunas antigas — a lista teria dois passos decorativos e o
+// fluxo não seria dado de verdade.
+export type ContextoGatilho = { commentId?: string; messageId?: string };
+
 async function executarFluxo(
   account: Account,
   auto: Automation,
   contactIgId: string,
-  deIndice: number
+  deIndice: number,
+  contexto: ContextoGatilho = {}
 ): Promise<void> {
   const r = interpretar(auto.steps, deIndice);
 
@@ -707,7 +714,7 @@ async function executarFluxo(
       return;
     }
 
-    await enfileirarPasso(account, auto, contactIgId, acao);
+    await enfileirarPasso(account, auto, contactIgId, acao, contexto);
   }
 
   // A lista acabou: esta pessoa não está mais no meio de nada.
@@ -743,7 +750,8 @@ async function enfileirarPasso(
   account: Account,
   auto: Automation,
   contactIgId: string,
-  acao: AcaoEnfileirar
+  acao: AcaoEnfileirar,
+  contexto: ContextoGatilho
 ) {
   const p = acao.passo;
   const base = {
@@ -763,14 +771,30 @@ async function enfileirarPasso(
     return;
   }
 
-  if (p.tipo === "reagir_story") {
-    // Sem mid não há mensagem para reagir; o gatilho de story trata isso antes.
+  if (p.tipo === "resposta_publica") {
+    // Só faz sentido quando o gatilho foi comentário: sem o id, não há o que
+    // responder. Numa automação de DM este passo simplesmente não acontece —
+    // e isso é comportamento, não erro, então não vira `step_ignorado`.
+    if (!contexto.commentId) return;
+    await enqueue({
+      ...base,
+      kind: "comment_reply",
+      comment_id: contexto.commentId,
+      payload: { text: pickRandom(p.textos) },
+      dedupe_key: commentReplyKey(contexto.commentId),
+    });
     return;
   }
 
-  if (p.tipo === "resposta_publica") {
-    // Resposta pública depende do id do comentário, que só o gatilho de
-    // comentário tem. Tratada lá, não aqui.
+  if (p.tipo === "reagir_story") {
+    // Mesma lógica: sem mensagem para reagir, o passo não acontece.
+    if (!contexto.messageId) return;
+    await enqueue({
+      ...base,
+      kind: "story_reaction",
+      payload: { message_id: contexto.messageId, reaction: p.emoji },
+      dedupe_key: storyReactionKey(contexto.messageId),
+    });
     return;
   }
 }
@@ -920,18 +944,41 @@ async function resolverFollow(
 }
 ```
 
-- [ ] **Passo 4: Trocar as chamadas restantes**
+- [ ] **Passo 4: Tirar o tratamento inline dos dois passos com contexto**
+
+Agora que o executor enfileira `resposta_publica` e `reagir_story`, o tratamento
+antigo vira duplicata — e duplicata que lê coluna, não a lista.
+
+Em `handleCommentEvent` (por volta da linha 455), **remover** o bloco que monta
+`comment_reply` a partir de `auto.public_replies`, e passar o id do comentário ao
+executor:
+
+```ts
+  await executarFluxo(account, auto, fromId, 0, { commentId: value.id });
+```
+
+Em `handleMessagingEvent` (por volta da linha 560), **remover** o bloco que monta
+`story_reaction` a partir de `auto.story_reaction`, e passar o id da mensagem:
+
+```ts
+  await executarFluxo(account, auto, senderId, 0, { messageId: msg.mid });
+```
+
+Use os nomes de variável que cada handler já tem em mãos para o id do comentário
+e o do remetente — se diferirem de `value.id` e `fromId`, ajuste a chamada.
+
+- [ ] **Passo 5: Trocar as chamadas restantes**
 
 Procurar o que sobrou:
 
 ```bash
-grep -n "advanceFlow\|enqueueFollowups\|awaiting" lib/engine.ts
+grep -n "advanceFlow\|enqueueFollowups\|awaiting\|auto.public_replies\|auto.story_reaction" lib/engine.ts
 ```
 
-Esperado: nenhuma ocorrência. Cada uma que restar é uma chamada que ficou
-apontando para função que não existe mais.
+Esperado: nenhuma ocorrência. Cada uma que restar é uma chamada apontando para
+função que não existe mais, ou uma leitura de coluna que deveria vir da lista.
 
-- [ ] **Passo 5: Verificar**
+- [ ] **Passo 6: Verificar**
 
 ```bash
 npm run verify
@@ -939,7 +986,7 @@ npm run verify
 
 Esperado: lint, typecheck, os testes (incluindo os 10 novos) e build passando.
 
-- [ ] **Passo 6: Commitar**
+- [ ] **Passo 7: Commitar**
 
 ```bash
 git add lib/engine.ts lib/dedupe.ts
