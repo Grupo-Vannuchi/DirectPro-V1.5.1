@@ -141,6 +141,11 @@ async function processItem(
 
   let recipient: { comment_id: string } | { id: string };
   if (item.kind === "private_reply") {
+    // A resposta privada é endereçada ao COMENTÁRIO, não à pessoa, e é por isso
+    // que ela não passa pela checagem de janela: a Meta permite uma por
+    // comentário justamente para quem comentou e nunca mandou DM — ou seja,
+    // quem nunca teve janela aberta. Sem este ramo, toda automação com gatilho
+    // de comentário viraria `skipped`.
     recipient = { comment_id: item.comment_id! };
   } else {
     // DMs comuns só dentro da janela de 24h — regra da Meta
@@ -149,7 +154,13 @@ async function processItem(
   }
 
   let message: OutgoingMessage;
-  if (item.kind === "dm_link" || item.kind === "dm_reminder") {
+  // `p.url` entra na condição por causa da resposta privada: um passo `dm` com
+  // url pode ser a PRIMEIRA mensagem de um fluxo disparado por comentário, e aí
+  // ele é enfileirado como `private_reply` (é a única forma de chegar). Só pelo
+  // tipo, ele cairia no `else` de texto puro e o link — o motivo de a automação
+  // existir — sumiria da mensagem. Nenhum outro tipo grava url no payload, então
+  // isto não muda o caminho de mais ninguém.
+  if (item.kind === "dm_link" || item.kind === "dm_reminder" || p.url) {
     message = linkMessage(texto, rotuloBotao || "Abrir link", p.url ?? "");
   } else if (p.quick_reply_label && p.quick_reply_payload) {
     message = {

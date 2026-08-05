@@ -12,11 +12,16 @@ import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
 import { interpretar, type Passo, type AcaoEnfileirar } from "./steps";
-// `privateReplyKey` e `welcomeMessageKey` não são mais importados aqui: eram as
-// chaves dos dois enfileiramentos de boas-vindas por coluna, que saíram. Elas
-// continuam em lib/dedupe.ts, com teste, porque a fila antiga ainda tem linhas
-// gravadas com esses prefixos.
+// `welcomeMessageKey` não é mais importado aqui: era a chave do enfileiramento
+// de boas-vindas por coluna, que saiu. Ela continua em lib/dedupe.ts, com teste,
+// porque a fila antiga ainda tem linhas gravadas com esse prefixo.
+//
+// `privateReplyKey` voltou a ser usado. Não é resíduo: a resposta privada ao
+// comentário é o ÚNICO caminho de entrega de uma automação disparada por
+// comentário (ver `gastarRespostaPrivada`), e a chave dela continua sendo o id
+// do comentário, como sempre foi.
 import {
+  privateReplyKey,
   commentReplyKey,
   followGateKey,
   emailAskKey,
@@ -277,7 +282,43 @@ const MAX_FOLLOW_REQUESTS = 5;
 // e `reagir_story` não teriam como ser enfileirados aqui e continuariam tratados
 // à parte, lendo as colunas antigas — a lista teria dois passos decorativos e o
 // fluxo não seria dado de verdade.
-export type ContextoGatilho = { commentId?: string; messageId?: string };
+export type ContextoGatilho = {
+  commentId?: string;
+  messageId?: string;
+  // Mutável de propósito, e escrito só por `gastarRespostaPrivada`: marca que a
+  // resposta privada deste comentário já foi gasta. Fica no contexto, e não numa
+  // variável local, porque `executarFluxo` chama a si mesmo (portão de follow,
+  // e-mail já conhecido) passando o MESMO objeto — a marca precisa atravessar
+  // essas chamadas, senão a segunda mensagem gastaria a resposta privada de novo.
+  respostaPrivadaGasta?: boolean;
+};
+
+// A resposta privada ao comentário: a única mensagem que fura a janela de 24h.
+//
+// POR QUE isto existe: quem comenta num post quase nunca mandou DM para a conta
+// antes, então NÃO existe janela de 24h aberta para essa pessoa. `processItem`
+// descarta como `skipped`, em silêncio, toda DM comum fora da janela. Sem
+// resposta privada, automação com gatilho de comentário — o recurso central
+// deste produto — não entrega absolutamente nada.
+//
+// A Meta permite UMA resposta privada por comentário; a segunda falha. Por isso
+// esta função é um consumo, não uma consulta: a primeira mensagem da execução
+// gasta o direito e marca o contexto. As seguintes (o link, o lembrete) saem
+// pelos tipos normais — a essa altura a pessoa já tocou no botão ou respondeu, e
+// a janela está aberta.
+//
+// Na prática a primeira é a de boas-vindas, porque o fluxo para nela esperando o
+// toque. Mas isso é consequência da lista que o formulário grava hoje, não uma
+// garantia: a marca no contexto vale para qualquer lista, inclusive uma que não
+// tenha passo de espera logo no começo.
+//
+// Devolve o id do comentário quando esta mensagem deve sair como resposta
+// privada, e null quando deve sair como DM comum.
+function gastarRespostaPrivada(contexto: ContextoGatilho): string | null {
+  if (!contexto.commentId || contexto.respostaPrivadaGasta) return null;
+  contexto.respostaPrivadaGasta = true;
+  return contexto.commentId;
+}
 
 async function executarFluxo(
   account: Account,
@@ -303,7 +344,7 @@ async function executarFluxo(
 
     if (p.tipo === "pedir_follow") {
       // O portão é o único passo que consulta a Meta antes de decidir.
-      const passou = await resolverFollow(account, auto, contactIgId, p, acao.indice);
+      const passou = await resolverFollow(account, auto, contactIgId, p, acao.indice, contexto);
       // Passou: `interpretar` PAROU neste passo, então o resto da lista sequer
       // foi olhado — este é o último item que ele devolveu, e seguir o laço não
       // faria nada. Retoma do próximo índice, senão vencer o portão seria o fim
@@ -323,13 +364,20 @@ async function executarFluxo(
       if (rows[0]?.email) {
         return executarFluxo(account, auto, contactIgId, acao.indice + 1, contexto);
       }
+      // Quando o pedido de e-mail é o primeiro envio de uma execução nascida de
+      // comentário, ele também tem que furar a janela: como DM comum seria
+      // descartado e o fluxo morreria antes de mandar qualquer coisa.
+      const comentario = gastarRespostaPrivada(contexto);
       await enqueue({
         account_id: account.ig_user_id,
-        kind: "dm_email_ask",
+        kind: comentario ? "private_reply" : "dm_email_ask",
         contact_ig_id: contactIgId,
         automation_id: auto.id,
+        comment_id: comentario ?? undefined,
         payload: { text: p.texto },
-        dedupe_key: emailAskKey(auto.id, contactIgId, dayBucket()),
+        dedupe_key: comentario
+          ? privateReplyKey(comentario)
+          : emailAskKey(auto.id, contactIgId, dayBucket()),
       });
       await gravarCursor(account.ig_user_id, contactIgId, auto.id, acao.indice);
       return;
@@ -422,9 +470,24 @@ async function enfileirarPasso(
     //   sem rótulo e sem url → texto puro, que é `dm_link` sem url: o mesmo
     //     `linkMessage` devolve só `{ text }`.
     const respostaRapida = Boolean(p.botao_label) && !p.url;
+
+    // ...e sobre essas três formas vem uma quarta decisão, que é de ENTREGA, não
+    // de conteúdo: a primeira mensagem de uma execução disparada por comentário
+    // sai como `private_reply`, presa ao id do comentário. É o que fura a janela
+    // de 24h (ver `gastarRespostaPrivada`) — sem isso ela é descartada como
+    // `skipped` e a automação por comentário não entrega nada.
+    //
+    // O `payload` NÃO muda por causa disso, e é isso que preserva o botão: o
+    // dreno só desvia para `linkMessage` quando o tipo é `dm_link`/`dm_reminder`
+    // ou quando há url; fora daí, rótulo + payload de resposta rápida viram
+    // `quick_replies`. Então a resposta privada sai com o mesmo botão e o mesmo
+    // `AUTO:<id da automação>` que retoma o fluxo quando a pessoa toca.
+    const comentario = gastarRespostaPrivada(contexto);
+
     await enqueue({
       ...base,
-      kind: respostaRapida ? "dm_welcome" : "dm_link",
+      kind: comentario ? "private_reply" : respostaRapida ? "dm_welcome" : "dm_link",
+      comment_id: comentario ?? undefined,
       payload: respostaRapida
         ? {
             text: p.texto,
@@ -432,7 +495,14 @@ async function enfileirarPasso(
             quick_reply_payload: `AUTO:${auto.id}`,
           }
         : { text: p.texto, button_label: p.botao_label ?? null, url: p.url ?? null },
-      dedupe_key: passoKey(auto.id, contactIgId, acao.indice, dayBucket()),
+      // A chave da resposta privada é a mesma do motor antigo: o id do
+      // comentário. É ele que garante uma única resposta privada por comentário,
+      // que é exatamente o que a Meta permite — `passoKey` (por passo e por dia)
+      // deixaria dois eventos do mesmo comentário virarem dois envios, e o
+      // segundo falharia.
+      dedupe_key: comentario
+        ? privateReplyKey(comentario)
+        : passoKey(auto.id, contactIgId, acao.indice, dayBucket()),
     });
     return;
   }
@@ -490,7 +560,8 @@ async function resolverFollow(
   auto: Automation,
   contactIgId: string,
   passo: { texto: string; botao_label: string },
-  indice: number
+  indice: number,
+  contexto: ContextoGatilho
 ): Promise<boolean> {
   const segue = await checkFollowsAccount(contactIgId, account.access_token);
 
@@ -520,11 +591,17 @@ async function resolverFollow(
   const tentativa = rows[0]?.follow_attempts ?? 1;
 
   if (tentativa <= MAX_FOLLOW_REQUESTS) {
+    // Mesma regra do passo `dm`: se o pedido de follow é o primeiro envio de uma
+    // execução nascida de comentário, ele sai como resposta privada. É o único
+    // jeito de ele chegar — e ele é um portão, então sem ele o fluxo inteiro
+    // fica parado esperando um toque num botão que nunca foi entregue.
+    const comentario = gastarRespostaPrivada(contexto);
     await enqueue({
       account_id: account.ig_user_id,
-      kind: "dm_follow_gate",
+      kind: comentario ? "private_reply" : "dm_follow_gate",
       contact_ig_id: contactIgId,
       automation_id: auto.id,
+      comment_id: comentario ?? undefined,
       payload: {
         text:
           tentativa === 1
@@ -533,7 +610,9 @@ async function resolverFollow(
         quick_reply_label: passo.botao_label,
         quick_reply_payload: `FOLLOW:${auto.id}`,
       },
-      dedupe_key: followGateKey(auto.id, contactIgId, dayBucket(), tentativa),
+      dedupe_key: comentario
+        ? privateReplyKey(comentario)
+        : followGateKey(auto.id, contactIgId, dayBucket(), tentativa),
     });
   }
   return false;
@@ -548,8 +627,10 @@ async function resolverFollow(
 // sempre pressupôs. Enquanto todo passo `dm` virava `dm_link`, `welcomed` ficava
 // sempre falso para tráfego novo e este fallback não disparava.
 //
-// `private_reply` continua na lista por causa das linhas antigas da fila, do
-// tempo em que as boas-vindas saíam por coluna e não por passo.
+// `private_reply` na lista não é só compatibilidade com as linhas antigas: é
+// como as boas-vindas de um fluxo disparado por comentário são gravadas HOJE
+// (ver `gastarRespostaPrivada`). Tirá-la daqui faria `welcomed` ser sempre falso
+// justamente para o gatilho mais usado do produto.
 async function shouldFallbackFollowup(
   accountId: string,
   automationId: string,
@@ -604,8 +685,13 @@ export async function handleCommentEvent(entryId: string | undefined, value: Com
   // `passoKey` por passo/dia), então nada barrava a segunda.
   //
   // O resto do fluxo é a lista: a resposta pública deixou de ser um caso à
-  // parte lido de `public_replies` e virou um passo como qualquer outro. O id
-  // do comentário vai junto porque só o gatilho o conhece.
+  // parte lido de `public_replies` e virou um passo como qualquer outro.
+  //
+  // O id do comentário vai junto por DOIS motivos. O primeiro é a resposta
+  // pública, que sem ele não teria o que responder. O segundo é a entrega: é
+  // esse id que faz a primeira mensagem sair como resposta privada e furar a
+  // janela de 24h (ver `gastarRespostaPrivada`). Sem ele, esta automação
+  // enfileira tudo como DM comum e o dreno descarta tudo, em silêncio.
   await executarFluxo(account, auto, fromId, 0, { commentId });
 }
 
