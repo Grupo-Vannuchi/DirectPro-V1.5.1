@@ -12,14 +12,16 @@ import { matches, pickRandom, extractEmail } from "./match";
 import { getUserProfile, checkFollowsAccount } from "./ig";
 import { scheduleTick } from "./qstash";
 import { interpretar, type Passo, type AcaoEnfileirar } from "./steps";
+// `privateReplyKey` e `welcomeMessageKey` não são mais importados aqui: eram as
+// chaves dos dois enfileiramentos de boas-vindas por coluna, que saíram. Elas
+// continuam em lib/dedupe.ts, com teste, porque a fila antiga ainda tem linhas
+// gravadas com esses prefixos.
 import {
-  privateReplyKey,
   commentReplyKey,
   followGateKey,
   emailAskKey,
   passoKey,
   emailAnswerKey,
-  welcomeMessageKey,
   storyReactionKey,
   manualReplyKey,
 } from "./dedupe";
@@ -507,6 +509,15 @@ async function resolverFollow(
 
 // Já houve boas-vindas recentes (e o link ainda não saiu)?
 // Evita reenviar o link quando a pessoa só manda "obrigado" depois.
+//
+// ATENÇÃO: esta consulta ainda procura `private_reply`/`dm_welcome`, que eram os
+// tipos dos enfileiramentos de boas-vindas por coluna removidos daqui. Como as
+// boas-vindas agora saem como passo `dm` — e todo passo `dm` vira `dm_link` —,
+// para tráfego novo `welcomed` fica sempre falso e este fallback não dispara
+// mais. Não foi corrigido junto porque a regra nova ("a lista já começou para
+// esta pessoa") não é uma troca de nome de tipo: `dm_link` é ao mesmo tempo o
+// que este trecho chamava de boas-vindas e o que ele chamava de link, então os
+// dois `exists` passariam a olhar a mesma coisa. Precisa de decisão própria.
 async function shouldFallbackFollowup(
   accountId: string,
   automationId: string,
@@ -551,24 +562,15 @@ export async function handleCommentEvent(entryId: string | undefined, value: Com
     last_automation_id: auto.id,
   });
 
-  // Resposta PRIVADA ao comentário: fura a janela de 24h,
-  // 1 vez por comentário, válida por até 7 dias.
-  if (auto.welcome_text) {
-    await enqueue({
-      account_id: account.ig_user_id,
-      kind: "private_reply",
-      contact_ig_id: fromId,
-      automation_id: auto.id,
-      comment_id: commentId,
-      payload: {
-        text: auto.welcome_text,
-        quick_reply_label: auto.quick_reply_label,
-        quick_reply_payload: `AUTO:${auto.id}`,
-      },
-      dedupe_key: privateReplyKey(commentId),
-    });
-  }
-
+  // Não há enfileiramento de boas-vindas aqui, e a ausência é de propósito: a
+  // mensagem de boas-vindas virou um passo `dm` da lista (o formulário grava
+  // `welcome_text` como o primeiro passo), então quem a envia é `executarFluxo`.
+  // O `enqueue` de `private_reply` lido da coluna `auto.welcome_text` continuava
+  // aqui por resíduo da migração, e o resultado era a pessoa receber a mesma
+  // mensagem DUAS vezes — uma por coluna, outra por passo. As chaves de
+  // deduplicação são diferentes (`privateReplyKey` por comentário contra
+  // `passoKey` por passo/dia), então nada barrava a segunda.
+  //
   // O resto do fluxo é a lista: a resposta pública deixou de ser um caso à
   // parte lido de `public_replies` e virou um passo como qualquer outro. O id
   // do comentário vai junto porque só o gatilho o conhece.
@@ -679,23 +681,20 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
   const auto = findMatch(automations, trigger, text, msg.reply_to?.story?.id);
 
   if (auto) {
-    // Conversa já aberta (a pessoa nos mandou mensagem) → DM direta
-    if (auto.welcome_text) {
-      await enqueue({
-        account_id: account.ig_user_id,
-        kind: "dm_welcome",
-        contact_ig_id: senderId,
-        automation_id: auto.id,
-        payload: {
-          text: auto.welcome_text,
-          quick_reply_label: auto.quick_reply_label,
-          quick_reply_payload: `AUTO:${auto.id}`,
-        },
-        dedupe_key: welcomeMessageKey(msg.mid, senderId, Date.now()),
-      });
-      await upsertContact(account.ig_user_id, senderId, { last_automation_id: auto.id });
-    }
+    // Marca de quem é a conversa a partir de agora. Ficava dentro do `if
+    // (auto.welcome_text)` que enfileirava as boas-vindas; saiu junto com ele e
+    // passou a ser incondicional, porque não tem nada a ver com boas-vindas: é o
+    // que faz o ramo do cursor e o de fallback, mais abaixo, saberem qual
+    // automação retomar quando a pessoa responder com texto.
+    await upsertContact(account.ig_user_id, senderId, { last_automation_id: auto.id });
 
+    // Também aqui não há enfileiramento de boas-vindas, pelo mesmo motivo do
+    // gatilho de comentário: ela é um passo `dm` da lista, e `executarFluxo`
+    // logo abaixo a envia. O `enqueue` de `dm_welcome` a partir da coluna
+    // `auto.welcome_text` era resíduo da migração e mandava a mensagem duas
+    // vezes — `welcomeMessageKey` (por mid/instante) e `passoKey` (por
+    // passo/dia) nunca colidem, então a deduplicação não pegava a repetição.
+    //
     // O coraçãozinho na resposta de story deixou de ser caso à parte lido de
     // `story_reaction` e virou passo da lista. O id da mensagem vai junto
     // porque só o gatilho o conhece.
