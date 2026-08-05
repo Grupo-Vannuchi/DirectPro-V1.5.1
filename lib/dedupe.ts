@@ -4,11 +4,25 @@
 // garante que ninguém receba a mesma mensagem duas vezes. Ou seja, o formato
 // destas strings é uma regra de negócio — não detalhe de implementação.
 //
-// Estavam escritas como oito literais espalhados pelo motor. Juntas aqui por
-// dois motivos: dá para ver de relance o que torna cada envio único, e dá para
-// testar. Mudar qualquer formato abaixo faz itens já enfileirados deixarem de
-// casar com os novos — na prática, autoriza envio em dobro. Os testes em
-// tests/dedupe.test.ts existem para essa mudança nunca passar despercebida.
+// Começaram como oito literais espalhados pelo motor. Hoje são DEZ funções
+// neste arquivo: as oito de origem, mais `passoKey` (que nasceu com o fluxo por
+// passos) e `manualReplyKey`. Juntas aqui por dois motivos: dá para ver de
+// relance o que torna cada envio único, e dá para testar. Mudar qualquer
+// formato abaixo faz itens já enfileirados deixarem de casar com os novos — na
+// prática, autoriza envio em dobro. Os testes em tests/dedupe.test.ts (e
+// tests/manual-reply-key.test.ts) existem para essa mudança nunca passar
+// despercebida.
+//
+// DUAS NÃO TÊM MAIS CHAMADOR, e cada uma por um motivo diferente:
+//
+//   `followupKey` está MORTA. Ela era a chave dos itens gerados a partir da
+//     tabela `followups`, e desde que os lembretes viraram passos da lista
+//     ninguém a chama — só os testes. Fica até a tabela `followups` sair (o
+//     mesmo prazo das colunas órfãs), porque a fila ainda tem linhas antigas
+//     gravadas com o prefixo `fu:`; sai junto com elas.
+//   `welcomeMessageKey` também não é mais chamada (o enfileiramento de
+//     boas-vindas por coluna saiu), e fica pelo mesmo motivo: existem linhas
+//     `wm:` gravadas na fila.
 
 // Resposta privada e resposta pública nascem de um comentário. O id do
 // comentário é único e permanente, então basta ele.
@@ -27,6 +41,7 @@ export const followGateKey = (
 export const emailAskKey = (automationId: string, contactIgId: string, dia: string) =>
   `ea:${automationId}:${contactIgId}:${dia}`;
 
+// MORTA: nenhum chamador fora dos testes. Ver a nota no topo do arquivo.
 export const followupKey = (followupId: string, contactIgId: string, dia: string) =>
   `fu:${followupId}:${contactIgId}:${dia}`;
 

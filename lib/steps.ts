@@ -113,6 +113,25 @@ export function interpretar(passos: unknown, deIndice: number): Resultado {
     return r;
   }
 
+  // Lista VAZIA tem que dar sinal, e por um motivo que não é simetria: é a
+  // única forma de falha do produto que passaria sem deixar rastro nenhum.
+  //
+  // O laço abaixo simplesmente não itera, e o resultado sai
+  // `{enfileirar: [], pararEm: null, ignorados: []}` — indistinguível de uma
+  // lista que terminou. O motor então limpa o cursor e ninguém recebe nada,
+  // sem uma linha em Atividade dizendo por quê.
+  //
+  // E não é caso hipotético: `[]` é o `default '[]'::jsonb` da coluna, ou
+  // seja, é exatamente o que toda automação criada ANTES desta branch tem até
+  // alguém salvá-la de novo pelo formulário.
+  //
+  // O motivo é próprio, e não o mesmo de "não é lista", porque as duas causas
+  // são diferentes: aqui a coluna está íntegra e o conteúdo é que falta.
+  if (!passos.length) {
+    r.ignorados.push({ indice: -1, motivo: "a automação não tem nenhum passo" });
+    return r;
+  }
+
   let atrasoSegundos = 0;
 
   for (let i = Math.max(0, deIndice); i < passos.length; i++) {

@@ -8,6 +8,7 @@ import {
   emailAnswerKey,
   welcomeMessageKey,
   storyReactionKey,
+  passoKey,
 } from "@/lib/dedupe";
 
 // A coluna dedupe_key é UNIQUE e o enqueue usa `on conflict do nothing`. Esse
@@ -62,6 +63,39 @@ describe("chaves com balde de dia", () => {
   });
 });
 
+describe("passoKey", () => {
+  // É a chave de TODO passo `dm` que não sai como resposta privada — ou seja, a
+  // que segura a repetição do fluxo novo inteiro. Estava sem teste enquanto o
+  // arquivo afirmava, logo acima, que os testes existem para nenhuma mudança de
+  // formato passar despercebida.
+
+  it("mantém o formato por automação, pessoa, ÍNDICE e dia", () => {
+    expect(passoKey("auto-1", "user-9", 2, "2026-07-28")).toBe(
+      "passo:auto-1:user-9:2:2026-07-28"
+    );
+  });
+
+  it("o índice separa passos da MESMA automação no mesmo dia", () => {
+    // Sem o índice, dois lembretes da mesma automação colidiriam no UNIQUE e o
+    // segundo seria engolido pelo `on conflict do nothing`: a pessoa receberia
+    // uma mensagem só, em silêncio.
+    expect(passoKey("auto-1", "user-9", 0, "2026-07-28")).not.toBe(
+      passoKey("auto-1", "user-9", 1, "2026-07-28")
+    );
+  });
+
+  it("libera de novo no dia seguinte, mas não duas vezes no mesmo dia", () => {
+    const hoje = passoKey("auto-1", "user-9", 0, "2026-07-28");
+    expect(passoKey("auto-1", "user-9", 0, "2026-07-28")).toBe(hoje);
+    expect(passoKey("auto-1", "user-9", 0, "2026-07-29")).not.toBe(hoje);
+  });
+
+  it("não confunde pessoas nem automações diferentes", () => {
+    expect(passoKey("auto-1", "user-1", 0, "d")).not.toBe(passoKey("auto-1", "user-2", 0, "d"));
+    expect(passoKey("auto-1", "user-1", 0, "d")).not.toBe(passoKey("auto-2", "user-1", 0, "d"));
+  });
+});
+
 describe("chaves vindas de mensagem recebida", () => {
   it("usa o id da mensagem quando a Meta manda", () => {
     expect(emailAnswerKey("mid-42", "user-9", 1_700_000_000_000)).toBe("ear:mid-42");
@@ -102,6 +136,7 @@ describe("os prefixos não se repetem entre tipos", () => {
       emailAnswerKey("m", "s", 1),
       welcomeMessageKey("m", "s", 1),
       storyReactionKey("m"),
+      passoKey("a", "c", 0, "d"),
     ].map((k) => k.split(":")[0]);
 
     expect(new Set(prefixos).size).toBe(prefixos.length);

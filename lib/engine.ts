@@ -340,8 +340,20 @@ async function executarFluxo(
 
   // Passo mal montado vira linha em Atividade, não exceção. Automação quebrada
   // não pode derrubar o webhook: a Meta reenviaria o evento por 36 horas.
+  //
+  // Com throttle, e não `logEvent` direto: os ignorados são recalculados a CADA
+  // interpretação, e `executarFluxo` chama a si mesmo (portão vencido, e-mail já
+  // conhecido). Um único passo quebrado rendia várias linhas idênticas por
+  // evento recebido, e o webhook aceita o que a Meta mandar — o diagnóstico
+  // virava o maior escritor da tabela. Um aviso por janela diz a mesma coisa.
+  //
+  // O preço, dito por inteiro: a janela é por TIPO, global — dois passos
+  // quebrados em automações diferentes dentro dos mesmos 10 minutos rendem uma
+  // linha só, e o segundo motivo não aparece. É o comportamento de
+  // `logEventThrottled`, e aqui ele é aceitável: o evento é diagnóstico de
+  // automação mal montada, e quem for investigar já vai abrir a automação.
   for (const ig of r.ignorados) {
-    await logEvent(account.ig_user_id, "step_ignorado", {
+    await logEventThrottled(account.ig_user_id, "step_ignorado", {
       automation_id: auto.id,
       indice: ig.indice,
       motivo: ig.motivo,
@@ -428,12 +440,44 @@ async function limparCursor(accountId: string, contactIgId: string) {
   );
 }
 
-async function lerCursor(accountId: string, contactIgId: string): Promise<number | null> {
+// Lê o cursor JUNTO com a automação dona dele.
+//
+// O índice sozinho não quer dizer nada: ele é a posição dentro de UMA lista de
+// passos, e cada automação tem a sua. `gravarCursor` sempre escreve os dois
+// campos na mesma linha, e é essa dupla que responde "qual automação, em que
+// ponto" — o ramo de texto de `handleMessagingEvent` já lia assim.
+//
+// Ler só o índice era o defeito: quem recebeu o botão da automação A, foi
+// interrompido pela B e depois tocou no botão antigo de A tinha o cursor de B
+// aplicado à lista de A. Dois estragos, ambos silenciosos: índice além do fim
+// da lista de A não enfileira nada, `pararEm` fica null e `limparCursor` apaga
+// o lugar da pessoa na automação em que ela realmente estava; índice válido em
+// A pula passos, inclusive o portão de follow, e entrega o link a quem não
+// segue.
+async function lerCursor(
+  accountId: string,
+  contactIgId: string
+): Promise<{ indice: number | null; automationId: string | null }> {
   const rows = (await sql().query(
-    `select flow_step_index from contacts where account_id = $1 and ig_id = $2`,
+    `select flow_step_index, last_automation_id from contacts
+     where account_id = $1 and ig_id = $2`,
     [accountId, contactIgId]
-  )) as { flow_step_index: number | null }[];
-  return rows[0]?.flow_step_index ?? null;
+  )) as { flow_step_index: number | null; last_automation_id: string | null }[];
+  return {
+    indice: rows[0]?.flow_step_index ?? null,
+    automationId: rows[0]?.last_automation_id ?? null,
+  };
+}
+
+// O índice do cursor, mas SÓ quando ele é desta automação. Null nos demais
+// casos — inclusive quando existe um cursor, de outra. Quem chama trata null
+// como "começa do zero", que é o único ponto de partida afirmável quando o
+// cursor não fala da lista que vai ser percorrida.
+function cursorDesta(
+  cursor: { indice: number | null; automationId: string | null },
+  automationId: string
+): number | null {
+  return cursor.automationId === automationId ? cursor.indice : null;
 }
 
 // Enfileira um passo que não espera resposta.
@@ -554,10 +598,21 @@ async function enfileirarPasso(
 // Zera o contador de pedidos de follow deste contato.
 //
 // Sem isto o contador só sobe: `clearFollowState` saiu junto com o fluxo antigo
-// e nada mais repõe o valor. Quem passou de MAX_FOLLOW_REQUESTS e voltar ao
-// portão trava em silêncio — o fluxo para ali e nem o pedido chega a ser
-// enviado. O limite existe para não virar spam num ciclo, não para ser
-// armadilha permanente por contato.
+// e nada mais repõe o valor.
+//
+// O QUE ISTO NÃO RESOLVE, e é preciso estar escrito: o contador só volta a zero
+// quando o portão PASSA — a pessoa seguiu, ou a Meta não informou. Quem estourou
+// MAX_FOLLOW_REQUESTS e continua sem seguir fica travado em silêncio, e o
+// travamento é por CONTATO, não por automação nem por dia: `follow_attempts` é
+// uma coluna de `contacts`, então quem esgotou as tentativas no portão da
+// automação A também não recebe mais o pedido da B, hoje nem amanhã. O fluxo
+// para no portão e nem o pedido chega a ser enviado — não há mais botão para
+// tocar, e é o toque que dispararia a reconsulta que zeraria o contador.
+//
+// Ou seja: o limite protege contra virar spam, mas ele É armadilha permanente
+// para quem nunca segue. Sair disso hoje exige mexer no banco. Um reset por
+// balde de dia (como as chaves de deduplicação já fazem) resolveria, e não foi
+// feito aqui: mudaria o comportamento do limite, e esta branch trocou o motor.
 //
 // A condição no fim evita escrever à toa em quem já está zerado, que é o caso
 // comum: todo passo de follow vencido passaria por aqui.
@@ -745,20 +800,41 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
     const payload = msg.quick_reply!.payload!;
     if (payload.startsWith("AUTO:")) {
       // O toque É a resposta que a `dm` de resposta rápida esperava: retoma do
-      // passo SEGUINTE ao que ficou gravado. Sem cursor, do começo: a
-      // boas-vindas é um passo da lista como qualquer outro e sempre grava o
-      // cursor ao parar, então cursor nulo aqui é botão de uma mensagem antiga
-      // (fluxo já concluído, cursor limpo, ou contato de antes desta versão) —
-      // e o começo é o único ponto de partida que dá para afirmar.
+      // passo SEGUINTE ao que ficou gravado.
+      //
+      // Duas premissas sustentam esse "+1", e as duas precisam estar ditas:
+      //
+      // A PRIMEIRA é que o cursor seja desta automação — a do botão. Ela não
+      // vale sozinha, é IMPOSTA aqui por `cursorDesta`: o índice de outra
+      // automação seria uma posição em outra lista, e somar 1 a ele pularia
+      // passos desta (o portão de follow inclusive) ou apontaria para além do
+      // fim. Cursor de outra automação vira null e cai no caso de baixo.
+      //
+      // A SEGUNDA é o que null significa, e aqui não há como decidir: pode ser
+      // "nunca começou" (contato de antes desta versão, cursor nunca gravado)
+      // ou "o fluxo TERMINOU" — `executarFluxo` limpa o cursor ao chegar ao
+      // fim da lista, e o botão continua tocável na mensagem antiga. Não dá
+      // para separar os dois pela coluna, então o começo é o único ponto de
+      // partida afirmável: repetir a lista é recuperável (a deduplicação por
+      // `passoKey` segura o dia), começar no meio às cegas não é.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(5));
-      const cursor = await lerCursor(account.ig_user_id, senderId);
-      if (auto) await executarFluxo(account, auto, senderId, cursor === null ? 0 : cursor + 1);
+      if (auto) {
+        const indice = cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id);
+        await executarFluxo(account, auto, senderId, indice === null ? 0 : indice + 1);
+      }
     } else if (payload.startsWith("FOLLOW:")) {
       // "Já sigo!" — consulta a API de novo. Só passa se realmente seguir.
       // O passo de follow é reavaliado, então retoma DELE, não do seguinte.
+      //
+      // Mesma exigência do ramo acima: o índice só serve se for desta
+      // automação. Sendo de outra, começa do zero — a lista desta é percorrida
+      // desde o início e o portão dela é reavaliado no lugar certo, em vez de
+      // um índice emprestado apontar para um passo que não é portão nenhum.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(7));
-      const doIndice = (await lerCursor(account.ig_user_id, senderId)) ?? 0;
-      if (auto) await executarFluxo(account, auto, senderId, doIndice);
+      if (auto) {
+        const indice = cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id);
+        await executarFluxo(account, auto, senderId, indice ?? 0);
+      }
     }
     return;
   }

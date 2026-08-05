@@ -14,9 +14,22 @@ function splitList(raw: string, sep: RegExp): string[] {
 
 // Monta a lista de passos a partir dos campos do formulário.
 //
-// A ordem aqui é EXATAMENTE a que o engine executava codificada — é isso que
-// faz a Tarefa 4 não mudar comportamento nenhum. Quando o editor de blocos
-// chegar (Fase 1b), esta função sai: a lista virá pronta da tela.
+// A ordem aqui reproduz a que o engine executava codificada, com UMA diferença
+// conhecida — e ela está escrita porque esta frase já foi usada como garantia:
+//
+//   No gatilho de COMENTÁRIO o motor antigo enfileirava a resposta privada de
+//   boas-vindas ANTES da resposta pública ao comentário. Aqui a
+//   `resposta_publica` vem primeiro, e a `dm` de boas-vindas depois.
+//
+// O que isso muda é a ORDEM NA FILA, não o que a pessoa recebe: são dois
+// destinos diferentes (um comentário público e uma DM), com chaves de
+// deduplicação diferentes, e o dreno entrega os dois. Na prática o efeito é
+// qual dos dois sai primeiro quando os dois estão pendentes no mesmo instante.
+//
+// Fora isso a sequência é a mesma: reação ao story, boas-vindas, portão de
+// follow, pedido de e-mail, e os followups na ordem em que estão. Quando o
+// editor de blocos chegar (Fase 1b), esta função sai: a lista virá pronta da
+// tela.
 function montarPassos(f: {
   triggers: string[];
   publicReplies: string[];

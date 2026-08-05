@@ -205,3 +205,91 @@ chamar API externa. Cada um é trabalho próprio.
 **React Flow.** Entra na Fase 2, quando houver ramificação para desenhar. Para
 uma corrente linear, uma tela com zoom e pan é mais trabalho para fazer o que
 uma lista faz melhor.
+
+---
+
+## Como reverter, e o que fazer ao voltar
+
+O caminho de volta é `git revert` desta branch. Ele funciona: o formulário grava
+**as colunas antigas E `steps`**, então as 28 colunas continuam corretas e o
+motor antigo volta a executar a partir delas.
+
+O que o `revert` **não** desfaz é o que o motor novo deixou (ou não deixou) nas
+tabelas. São três coisas, e as três mordem na volta — não na ida.
+
+### 1 · `steps` congela enquanto a branch está revertida
+
+`app/automacoes/actions.ts` é o **único** escritor de `automations.steps`. Com a
+branch revertida, ele sai junto: salvar uma automação atualiza as colunas e
+deixa `steps` **exatamente como estava**.
+
+Nada acusa, porque a tela lê as colunas. A automação aparece certa, o motor
+antigo a executa certa, e `steps` guarda em silêncio a versão de antes do
+revert.
+
+O estrago aparece ao **reaplicar** a branch: o motor volta a ler `steps` e passa
+a executar o fluxo velho — texto antigo, url antiga, portão que já tinha sido
+tirado —, enquanto a tela continua mostrando o novo. Divergência silenciosa
+entre o que se vê e o que sai.
+
+> **Reverteu e mexeu em automação? Antes de reaplicar, salve cada automação uma
+> vez pelo formulário.** Abrir e clicar em salvar basta: é o que regrava `steps`
+> a partir das colunas. Não há script para isso, e não deve haver — salvar pelo
+> formulário é o mesmo caminho que produziu a lista na primeira vez.
+
+### 2 · `contacts.awaiting` para de ser escrito, e quem está num portão escapa dele
+
+O motor antigo guarda o ponto de parada em `contacts.awaiting` (`'follow'` ou
+`'email'`). O novo **nunca escreve essa coluna** — ele usa `flow_step_index`.
+
+Então, no instante do revert, quem estava parado num portão tem
+`flow_step_index` preenchido e `awaiting = null`. O motor antigo não enxerga
+`flow_step_index`: para ele, essa pessoa não está esperando nada. A próxima
+mensagem dela cai no fallback, que **manda o link** — sem passar pelo portão de
+follow, que era justamente o que a segurava.
+
+Ou seja: reverter **entrega o link a quem não segue**, para todo contato parado
+num `pedir_follow` naquele momento. Não há como evitar isso pelo código já
+gravado; o que dá para fazer é escolher a hora. Reverter com a fila vazia e sem
+contatos com `flow_step_index` preenchido custa zero:
+
+```sql
+select count(*) from contacts where flow_step_index is not null;
+select count(*) from queue where status in ('pending','sending');
+```
+
+Com as duas em zero, o revert não perde ninguém. Diferente de zero, o número é
+exatamente quantas pessoas vão pular o portão.
+
+### 3 · Resposta privada pendente perde o link
+
+`lib/queue-drain.ts` só monta template de botão quando o tipo é
+`dm_link`/`dm_reminder` **ou quando há `url` no payload**. Essa segunda condição
+nasceu nesta branch, para o caso de um passo `dm` com url ser a primeira
+mensagem de um fluxo por comentário — que sai como `private_reply`.
+
+Revertida, a condição some. Itens `private_reply` **já enfileirados** com `url`
+no payload passam a cair no ramo de texto puro e são entregues **sem o link** —
+a mensagem sai, e sai errada.
+
+Isto é irreversível item a item (o envio já aconteceu), então a mitigação é a
+mesma do ponto 2: drenar a fila antes de reverter. Se não der, dá para ver o
+tamanho do problema antes:
+
+```sql
+select count(*) from queue
+ where kind = 'private_reply' and status in ('pending','sending')
+   and payload ? 'url' and payload->>'url' <> '';
+```
+
+### Resumo operacional
+
+| momento | o que fazer |
+|---|---|
+| **antes de reverter** | drenar a fila e conferir as duas contagens acima |
+| **enquanto revertido** | lembrar que toda automação salva desatualiza `steps` |
+| **antes de reaplicar** | **salvar cada automação uma vez pelo formulário** |
+
+O terceiro item é o único obrigatório, e é o mais fácil de esquecer: os outros
+dois têm sintoma na hora, esse só aparece depois — em silêncio, executando um
+fluxo que ninguém mais vê na tela.

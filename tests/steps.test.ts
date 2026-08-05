@@ -137,6 +137,37 @@ describe("interpretar", () => {
     expect(r.ignorados[0].motivo).toBe("a automação não tem lista de passos");
   });
 
+  it("lista VAZIA registra o motivo, em vez de entregar zero em silêncio", () => {
+    // Impede a única falha do produto que não deixaria rastro em Atividade: o
+    // laço não itera, o resultado fica igual ao de uma lista que TERMINOU, o
+    // motor limpa o cursor e ninguém recebe nada — sem nenhum evento dizendo
+    // por quê. E `[]` é o `default '[]'::jsonb` da coluna, ou seja, é o que
+    // toda automação criada antes desta branch tem até ser salva de novo.
+    const r = interpretar([], 0);
+    expect(r.enfileirar).toEqual([]);
+    expect(r.pararEm).toBeNull();
+    expect(r.ignorados).toEqual([{ indice: -1, motivo: "a automação não tem nenhum passo" }]);
+    // Motivo PRÓPRIO: quem lê Atividade precisa distinguir "a coluna não é uma
+    // lista" (dado corrompido) de "a lista está vazia" (automação sem fluxo).
+    expect(r.ignorados[0].motivo).not.toBe(interpretar(null, 0).ignorados[0].motivo);
+  });
+
+  it("dm com rótulo VAZIO não espera nada", () => {
+    // Impede o fluxo travar para sempre: string vazia é ausência de rótulo, e
+    // sem rótulo o dreno não monta botão nenhum. Se ela contasse como resposta
+    // rápida, `interpretar` pararia num passo cujo botão nunca foi entregue —
+    // não haveria o que tocar, e o link nunca sairia.
+    const r = interpretar(
+      [
+        { tipo: "dm", texto: "oi", botao_label: "" },
+        { tipo: "dm", texto: "o link", url: "https://x.y" },
+      ],
+      0
+    );
+    expect(r.enfileirar.map((a) => a.indice)).toEqual([0, 1]);
+    expect(r.pararEm).toBeNull();
+  });
+
   it("índice além do fim devolve nada, sem estourar", () => {
     const r = interpretar([{ tipo: "dm", texto: "oi" }], 99);
     expect(r.enfileirar).toEqual([]);
@@ -187,6 +218,21 @@ describe("passoEsperado", () => {
     expect(passoEsperado([{ tipo: "dm", texto: "oi", botao_label: "b" }], 9)).toBeUndefined();
     expect(passoEsperado(null, 0)).toBeUndefined();
     expect(passoEsperado(undefined, 0)).toBeUndefined();
+  });
+
+  it("índice NEGATIVO devolve undefined", () => {
+    // O índice vem de `contacts.flow_step_index`, uma coluna int sem `check`:
+    // um valor negativo é gravável por fora, e `passos[-1]` em JavaScript não
+    // estoura nem devolve o último elemento — devolve undefined. Isto fixa que
+    // o resultado é "não há passo esperado", e não uma leitura de propriedade
+    // qualquer do array. Sem isso, o ramo do cursor poderia capturar a
+    // mensagem da pessoa como resposta a um passo que não existe.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_email", texto: "seu e-mail?" },
+    ];
+    expect(passoEsperado(passos, -1)).toBeUndefined();
+    expect(passoEsperado(passos, -2)).toBeUndefined();
   });
 });
 
