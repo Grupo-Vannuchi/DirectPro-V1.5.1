@@ -4,6 +4,8 @@ import {
   passoEsperado,
   retomadaDoFallback,
   interrompeOFluxo,
+  indiceDoPortao,
+  cursorDesta,
 } from "../lib/steps";
 
 describe("interpretar", () => {
@@ -221,12 +223,17 @@ describe("passoEsperado", () => {
   });
 
   it("índice NEGATIVO devolve undefined", () => {
-    // O índice vem de `contacts.flow_step_index`, uma coluna int sem `check`:
-    // um valor negativo é gravável por fora, e `passos[-1]` em JavaScript não
-    // estoura nem devolve o último elemento — devolve undefined. Isto fixa que
-    // o resultado é "não há passo esperado", e não uma leitura de propriedade
-    // qualquer do array. Sem isso, o ramo do cursor poderia capturar a
-    // mensagem da pessoa como resposta a um passo que não existe.
+    // O que este teste fixa é a SEMÂNTICA DE INDEXAÇÃO, e só isso: acesso por
+    // `passos[i]`, em que índice negativo é propriedade inexistente e devolve
+    // undefined — não o último elemento, como em linguagens que contam de trás
+    // para frente. Trocar o acesso por algo como `.at(i)` mudaria o resultado
+    // em silêncio, e o ramo do cursor passaria a tratar o ÚLTIMO passo da lista
+    // como o passo esperado.
+    //
+    // O que ele NÃO faz, e a versão anterior deste comentário prometia: impedir
+    // um cenário real. Nenhum caminho grava índice negativo — `interpretar` já
+    // faz `Math.max(0, deIndice)` e o cursor só recebe índices de passo. É rede
+    // contra mudança de implementação, não contra dado do banco.
     const passos = [
       { tipo: "dm", texto: "oi", botao_label: "quero!" },
       { tipo: "pedir_email", texto: "seu e-mail?" },
@@ -270,6 +277,94 @@ describe("interrompeOFluxo", () => {
     // em que a pessoa está parada, e tratá-la como interrupção descartaria o
     // cursor de quem só estava conversando.
     expect(interrompeOFluxo(undefined, parada)).toBe(false);
+  });
+});
+
+describe("indiceDoPortao", () => {
+  it("na lista do formulário, o portão NÃO é o índice 0", () => {
+    // Este é o teste que prova que a correção faz diferença. O ramo `FOLLOW:`
+    // caía no zero quando o cursor não era desta automação, e o comentário
+    // dizia que "a lista é percorrida desde o início e o portão é reavaliado no
+    // lugar certo". É falso para TODA lista que o formulário produz, e por
+    // construção: a boas-vindas é obrigatória (o `saveAutomation` recusa salvar
+    // sem ela), vem sempre antes do portão, e o rótulo do botão tem padrão não
+    // vazio — rótulo sem url é resposta rápida, ou seja, PARADA DURA.
+    //
+    // `interpretar` a partir do zero para na boas-vindas e nunca chega ao
+    // portão: o toque em "Já sigo!" não fazia nada.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "Quero o link! 🔗" },
+      { tipo: "pedir_follow", texto: "me segue", botao_label: "Já sigo! ✅" },
+      { tipo: "dm", texto: "o link", url: "https://x.y" },
+    ];
+    expect(indiceDoPortao(passos)).toBe(1);
+    expect(indiceDoPortao(passos)).not.toBe(0);
+    // E a confirmação do porquê: do zero, o fluxo para antes do portão.
+    expect(interpretar(passos, 0).pararEm).toBe(0);
+  });
+
+  it("lista sem pedir_follow devolve null", () => {
+    // Quem chama cai no `?? 0` — lista sem portão nenhum não tem o que afirmar.
+    expect(indiceDoPortao([{ tipo: "dm", texto: "oi", botao_label: "b" }])).toBeNull();
+    expect(indiceDoPortao([])).toBeNull();
+    expect(indiceDoPortao(null)).toBeNull();
+  });
+
+  it("portão INVÁLIDO não conta, e o válido depois dele é o encontrado", () => {
+    // Mesma regra de `contarParadasDuras` e `passoEsperado`: `interpretar`
+    // ignora o passo inválido, então ele nunca foi enviado e não é portão. Se
+    // ele contasse, o toque em "Já sigo!" retomaria de um passo que a pessoa
+    // nunca recebeu — e tudo o que vem depois dele sairia sem portão nenhum,
+    // que é entregar o link a quem não segue.
+    const passos = [
+      { tipo: "dm", texto: "oi", botao_label: "quero!" },
+      { tipo: "pedir_follow", botao_label: "já sigo" }, // sem texto: inválido
+      { tipo: "pedir_follow", texto: "me segue mesmo", botao_label: "já sigo" },
+    ];
+    expect(indiceDoPortao(passos)).toBe(2);
+  });
+
+  it("portão sem rótulo de botão CONTA — `conferir` só exige o texto", () => {
+    // Está aqui porque é contraintuitivo e alguém vai querer "consertar":
+    // `Passo` declara `botao_label` obrigatório no `pedir_follow`, mas
+    // `conferir` valida só o texto. Apertar `conferir` faria `interpretar`
+    // IGNORAR esse portão — e ignorar um portão é pular o portão, entregando o
+    // que vem depois a quem não segue. Sem rótulo o pedido sai sem botão, o que
+    // é ruim mas ainda barra; ignorado, não barra nada.
+    expect(indiceDoPortao([{ tipo: "pedir_follow", texto: "me segue" }])).toBe(0);
+  });
+
+  it("o primeiro portão vence, quando há mais de um", () => {
+    const passos = [
+      { tipo: "pedir_follow", texto: "a", botao_label: "x" },
+      { tipo: "pedir_follow", texto: "b", botao_label: "y" },
+    ];
+    expect(indiceDoPortao(passos)).toBe(0);
+  });
+});
+
+describe("cursorDesta", () => {
+  it("cursor DESTA automação devolve o índice", () => {
+    expect(cursorDesta({ indice: 3, automationId: "A" }, "A")).toBe(3);
+    // Zero é índice legítimo, não "sem cursor": quem chama tem que distinguir
+    // com `?? `, nunca com falsidade.
+    expect(cursorDesta({ indice: 0, automationId: "A" }, "A")).toBe(0);
+  });
+
+  it("cursor de OUTRA automação devolve null", () => {
+    // O bloqueador mais grave desta onda: o índice é posição dentro de UMA
+    // lista. O 3 de B aplicado à lista de A pula os passos 0 a 2 de A — o
+    // portão de follow entre eles — e entrega o link a quem não segue.
+    expect(cursorDesta({ indice: 3, automationId: "B" }, "A")).toBeNull();
+    expect(cursorDesta({ indice: 0, automationId: "B" }, "A")).toBeNull();
+  });
+
+  it("contato sem cursor devolve null", () => {
+    // Pode ser "nunca começou" ou "o fluxo terminou" — a coluna não separa os
+    // dois, e cada ramo do motor decide o que fazer com o null.
+    expect(cursorDesta({ indice: null, automationId: "A" }, "A")).toBeNull();
+    expect(cursorDesta({ indice: null, automationId: null }, "A")).toBeNull();
+    expect(cursorDesta({ indice: 3, automationId: null }, "A")).toBeNull();
   });
 });
 

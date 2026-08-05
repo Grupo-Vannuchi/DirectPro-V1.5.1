@@ -13,16 +13,23 @@
 // tests/manual-reply-key.test.ts) existem para essa mudança nunca passar
 // despercebida.
 //
-// DUAS NÃO TÊM MAIS CHAMADOR, e cada uma por um motivo diferente:
+// DUAS NÃO TÊM MAIS CHAMADOR:
 //
-//   `followupKey` está MORTA. Ela era a chave dos itens gerados a partir da
-//     tabela `followups`, e desde que os lembretes viraram passos da lista
-//     ninguém a chama — só os testes. Fica até a tabela `followups` sair (o
-//     mesmo prazo das colunas órfãs), porque a fila ainda tem linhas antigas
-//     gravadas com o prefixo `fu:`; sai junto com elas.
-//   `welcomeMessageKey` também não é mais chamada (o enfileiramento de
-//     boas-vindas por coluna saiu), e fica pelo mesmo motivo: existem linhas
-//     `wm:` gravadas na fila.
+//   `followupKey` era a chave dos itens gerados a partir da tabela `followups`,
+//     e desde que os lembretes viraram passos da lista ninguém a chama.
+//   `welcomeMessageKey` era a do enfileiramento de boas-vindas lido da coluna
+//     `welcome_text`, que saiu pelo mesmo motivo.
+//
+// As duas FICAM, e o motivo não é a fila: consultei a tabela — hoje ela só tem
+// os prefixos `mr:` e `passo:`, ZERO linhas `fu:` e ZERO `wm:`. A justificativa
+// que dizia o contrário estava errada.
+//
+// O motivo real é o desmonte pela metade: a tabela `followups` e as colunas
+// órfãs de `automations` ainda existem, e a decisão foi tirá-las todas de uma
+// vez depois do merge, não em pedaços dentro da branch que trocou o motor.
+// Estas duas funções são o par dessas colunas e saem no mesmo movimento. Até
+// lá são código morto com teste — o que custa nada e evita que alguém recrie
+// um formato incompatível se as colunas voltarem à discussão.
 
 // Resposta privada e resposta pública nascem de um comentário. O id do
 // comentário é único e permanente, então basta ele.

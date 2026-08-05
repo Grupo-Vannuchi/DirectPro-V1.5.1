@@ -176,6 +176,55 @@ function contarParadasDuras(passos: unknown[]): number {
   return n;
 }
 
+// O índice do PRIMEIRO portão de follow da lista. Null quando não há nenhum.
+//
+// Existe para o toque em "Já sigo!" ter um ponto de partida quando o cursor não
+// serve — e o ponto de partida afirmável, nesse caso, é o portão: o payload
+// `FOLLOW:<id>` só existe porque o portão daquela automação foi entregue, então
+// o toque AFIRMA onde a pessoa está.
+//
+// Sem isto, o motor caía no zero, e o zero é inútil para toda lista que o
+// formulário grava: a boas-vindas vem sempre antes do portão e sempre com
+// rótulo e sem url (`esperaResposta` → parada dura), então `interpretar` a
+// partir do zero para NELA e o portão nunca é alcançado. O toque no botão não
+// fazia nada.
+//
+// Passo inválido não conta, pela mesma regra de `contarParadasDuras` e
+// `passoEsperado`: `interpretar` o ignora, logo ele nunca foi enviado e não é
+// portão nenhum. Retomar de um `pedir_follow` sem texto entregaria a quem não
+// segue tudo o que vem depois dele.
+export function indiceDoPortao(passos: unknown): number | null {
+  if (!Array.isArray(passos)) return null;
+  for (let i = 0; i < passos.length; i++) {
+    const { passo } = conferir(passos[i]);
+    if (passo && passo.tipo === "pedir_follow") return i;
+  }
+  return null;
+}
+
+// O índice do cursor, mas SÓ quando ele é desta automação. Null nos demais
+// casos — inclusive quando existe um cursor, de outra.
+//
+// Veio de lib/engine.ts pelo mesmo motivo de `retomadaDoFallback`: é decisão
+// pura, e ela segura o bloqueador mais grave desta onda — o índice é uma posição
+// dentro de UMA lista, e cada automação tem a sua. Aplicar o cursor de B à lista
+// de A pula passos de A (o portão de follow inclusive, entregando o link a quem
+// não segue) ou aponta para além do fim dela.
+//
+// Recebe o cursor já lido do banco, e não o contato inteiro, para não arrastar
+// o tipo `Contact` (lib/db.ts, `server-only`) para dentro deste arquivo.
+//
+// Quem chama decide o que fazer com o null, e a resposta não é a mesma nos dois
+// ramos: o toque numa resposta rápida (`AUTO:`) não afirma posição nenhuma e
+// começa do zero; o toque no "Já sigo!" (`FOLLOW:`) afirma o portão, e usa
+// `indiceDoPortao`.
+export function cursorDesta(
+  cursor: { indice: number | null; automationId: string | null },
+  automationId: string
+): number | null {
+  return cursor.automationId === automationId ? cursor.indice : null;
+}
+
 // De qual passo o fallback retoma. Null quando não dá para afirmar.
 //
 // Veio de lib/engine.ts, onde era pura e por isso não testável — e onde esteve

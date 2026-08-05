@@ -19,6 +19,8 @@ import {
   passoEsperado,
   retomadaDoFallback,
   interrompeOFluxo,
+  indiceDoPortao,
+  cursorDesta,
   type AcaoEnfileirar,
 } from "./steps";
 // `welcomeMessageKey` não é mais importado aqui: era a chave do enfileiramento
@@ -99,18 +101,45 @@ export async function logEvent(accountId: string | null, type: string, payload: 
 //
 // A corrida entre duas requisições simultâneas pode gravar duas linhas em vez
 // de uma. Tudo bem: o que não pode é gravar dez mil.
+//
+// O `discriminador` ESTREITA a janela, e é opcional porque os dois usos são
+// diferentes:
+//
+//   SEM ele a janela é por TIPO e só por tipo — global, atravessando contas.
+//     É o que os diagnósticos de webhook não autenticado querem: eles nascem de
+//     requisição anônima, o `accountId` pode ser null, e o ponto é justamente
+//     não deixar a internet encher a tabela, doa a quem doer.
+//   COM ele a janela passa a ser por tipo + conta + um campo do payload. Sem
+//     isso, um passo quebrado da automação A silenciava por 10 minutos o aviso
+//     de OUTRA automação — e, em painel multi-conta, uma conta silenciava a
+//     outra. Isso não é redução de ruído, é perda de diagnóstico.
+//
+// O `account_id` só entra no filtro quando não é null: `account_id = null` não
+// casa com nada em SQL, e a janela por conta nunca fecharia — o throttle viraria
+// enfeite. Sem conta, discrimina só pelo campo do payload.
 export async function logEventThrottled(
   accountId: string | null,
   type: string,
   payload: unknown,
-  minutos = 10
+  minutos = 10,
+  discriminador?: { campo: string; valor: string }
 ): Promise<void> {
   await ensureSchema();
+  // `payload` é jsonb (ver lib/db.ts), então `->>` devolve o campo como texto —
+  // e a CHAVE também vai como parâmetro, verificado contra o banco.
+  const filtros = ["type = $1", "created_at > now() - make_interval(mins => $2::int)"];
+  const params: unknown[] = [type, minutos];
+  if (discriminador) {
+    params.push(discriminador.campo, discriminador.valor);
+    filtros.push(`payload->>$${params.length - 1} = $${params.length}`);
+    if (accountId !== null) {
+      params.push(accountId);
+      filtros.push(`account_id = $${params.length}`);
+    }
+  }
   const recentes = (await sql().query(
-    `select 1 from events
-     where type = $1 and created_at > now() - make_interval(mins => $2::int)
-     limit 1`,
-    [type, minutos]
+    `select 1 from events where ${filtros.join(" and ")} limit 1`,
+    params
   )) as unknown[];
   if (recentes.length) return;
   await logEvent(accountId, type, payload);
@@ -341,23 +370,34 @@ async function executarFluxo(
   // Passo mal montado vira linha em Atividade, não exceção. Automação quebrada
   // não pode derrubar o webhook: a Meta reenviaria o evento por 36 horas.
   //
-  // Com throttle, e não `logEvent` direto: os ignorados são recalculados a CADA
-  // interpretação, e `executarFluxo` chama a si mesmo (portão vencido, e-mail já
-  // conhecido). Um único passo quebrado rendia várias linhas idênticas por
-  // evento recebido, e o webhook aceita o que a Meta mandar — o diagnóstico
-  // virava o maior escritor da tabela. Um aviso por janela diz a mesma coisa.
+  // UMA linha por interpretação, com TODOS os ignorados dentro dela. As duas
+  // decisões — juntar e limitar por janela — resolvem coisas diferentes:
   //
-  // O preço, dito por inteiro: a janela é por TIPO, global — dois passos
-  // quebrados em automações diferentes dentro dos mesmos 10 minutos rendem uma
-  // linha só, e o segundo motivo não aparece. É o comportamento de
-  // `logEventThrottled`, e aqui ele é aceitável: o evento é diagnóstico de
-  // automação mal montada, e quem for investigar já vai abrir a automação.
-  for (const ig of r.ignorados) {
-    await logEventThrottled(account.ig_user_id, "step_ignorado", {
-      automation_id: auto.id,
-      indice: ig.indice,
-      motivo: ig.motivo,
-    });
+  // JUNTAR resolve a auto-supressão. Uma chamada por ignorado, dentro do laço,
+  // se estrangulava sozinha: a primeira volta INSERE a linha do tipo, e da
+  // segunda em diante, na MESMA interpretação, todas a encontram e desistem.
+  // Uma automação com N passos quebrados reportava só o de menor índice, e como
+  // a ordem do laço é estável os outros não apareciam NUNCA — perda permanente
+  // de diagnóstico, não redução de ruído.
+  //
+  // A JANELA resolve a repetição entre eventos: os ignorados são recalculados a
+  // cada interpretação, `executarFluxo` chama a si mesmo (portão vencido, e-mail
+  // já conhecido) e o webhook aceita o que a Meta mandar — sem throttle o
+  // diagnóstico virava o maior escritor da tabela.
+  //
+  // O que AINDA é suprimido, dito por inteiro: dentro de 10 minutos, a mesma
+  // automação da mesma conta só grava uma vez. Se a lista for editada nesse
+  // intervalo e passar a ignorar OUTROS passos, essa segunda leva não aparece
+  // até a janela virar. Outra automação, ou outra conta, não é mais afetada — o
+  // discriminador limita a janela a `automation_id` + `account_id`.
+  if (r.ignorados.length) {
+    await logEventThrottled(
+      account.ig_user_id,
+      "step_ignorado",
+      { automation_id: auto.id, passos: r.ignorados },
+      10,
+      { campo: "automation_id", valor: auto.id }
+    );
   }
 
   for (const acao of r.enfileirar) {
@@ -443,17 +483,38 @@ async function limparCursor(accountId: string, contactIgId: string) {
 // Lê o cursor JUNTO com a automação dona dele.
 //
 // O índice sozinho não quer dizer nada: ele é a posição dentro de UMA lista de
-// passos, e cada automação tem a sua. `gravarCursor` sempre escreve os dois
-// campos na mesma linha, e é essa dupla que responde "qual automação, em que
-// ponto" — o ramo de texto de `handleMessagingEvent` já lia assim.
+// passos, e cada automação tem a sua. É a dupla que responde "qual automação, em
+// que ponto" — o ramo de texto de `handleMessagingEvent` já lia assim.
+//
+// A dupla NÃO é garantida por `gravarCursor` sozinho, e afirmar isso seria
+// falso: `last_automation_id` tem três escritores, e dois deles escrevem só ele
+// — os `upsertContact` do gatilho de comentário e do gatilho de texto, que
+// deixam `flow_step_index` intocado. O que mantém a dupla coerente é o PAR: os
+// dois são imediatamente seguidos de um `executarFluxo`, e todo caminho de
+// `executarFluxo` termina em `gravarCursor` (que escreve os dois campos) ou em
+// `limparCursor`. A invariante é da sequência escrita-seguida-de-execução, não
+// de uma função só; quem inserir uma escrita de `last_automation_id` sem
+// execução logo depois a quebra.
 //
 // Ler só o índice era o defeito: quem recebeu o botão da automação A, foi
 // interrompido pela B e depois tocou no botão antigo de A tinha o cursor de B
-// aplicado à lista de A. Dois estragos, ambos silenciosos: índice além do fim
-// da lista de A não enfileira nada, `pararEm` fica null e `limparCursor` apaga
-// o lugar da pessoa na automação em que ela realmente estava; índice válido em
-// A pula passos, inclusive o portão de follow, e entrega o link a quem não
-// segue.
+// aplicado à lista de A. Eram dois estragos, e ler a dupla mata UM:
+//
+//   SUMIU — índice de B válido dentro da lista de A pulava passos de A, o
+//     portão de follow inclusive, e entregava o link a quem não segue. Com
+//     `cursorDesta` (lib/steps.ts), o índice emprestado nunca mais é aplicado.
+//   CONTINUA DE PÉ — o lugar da pessoa em B se perde. Não mais por
+//     `limparCursor` apagando: agora `executarFluxo(A, ...)` termina em
+//     `gravarCursor(A, ...)` e SOBRESCREVE o `flow_step_index` de B. Muda a
+//     forma, não o resultado.
+//
+// A causa do que continua é outra: `gravarCursor` e `limparCursor` não conferem
+// de quem é o cursor antes de escrever — há um cursor só por contato, e ele é do
+// último a escrever. Consertar isso é mudar a ESCRITA do cursor (dono, ou um
+// cursor por automação), e ramo de cursor já produziu defeito pior que o
+// original duas vezes nesta branch. Fica para uma mudança própria, com o
+// desenho decidido antes: aqui seria correção de escrita embutida numa onda de
+// correção de leitura.
 async function lerCursor(
   accountId: string,
   contactIgId: string
@@ -467,17 +528,6 @@ async function lerCursor(
     indice: rows[0]?.flow_step_index ?? null,
     automationId: rows[0]?.last_automation_id ?? null,
   };
-}
-
-// O índice do cursor, mas SÓ quando ele é desta automação. Null nos demais
-// casos — inclusive quando existe um cursor, de outra. Quem chama trata null
-// como "começa do zero", que é o único ponto de partida afirmável quando o
-// cursor não fala da lista que vai ser percorrida.
-function cursorDesta(
-  cursor: { indice: number | null; automationId: string | null },
-  automationId: string
-): number | null {
-  return cursor.automationId === automationId ? cursor.indice : null;
 }
 
 // Enfileira um passo que não espera resposta.
@@ -600,19 +650,26 @@ async function enfileirarPasso(
 // Sem isto o contador só sobe: `clearFollowState` saiu junto com o fluxo antigo
 // e nada mais repõe o valor.
 //
-// O QUE ISTO NÃO RESOLVE, e é preciso estar escrito: o contador só volta a zero
-// quando o portão PASSA — a pessoa seguiu, ou a Meta não informou. Quem estourou
-// MAX_FOLLOW_REQUESTS e continua sem seguir fica travado em silêncio, e o
-// travamento é por CONTATO, não por automação nem por dia: `follow_attempts` é
-// uma coluna de `contacts`, então quem esgotou as tentativas no portão da
-// automação A também não recebe mais o pedido da B, hoje nem amanhã. O fluxo
-// para no portão e nem o pedido chega a ser enviado — não há mais botão para
-// tocar, e é o toque que dispararia a reconsulta que zeraria o contador.
+// O QUE ISTO NÃO RESOLVE, e é preciso estar escrito com a medida certa: o
+// contador só volta a zero quando o portão PASSA — a pessoa seguiu, ou a Meta
+// não informou. Estourado o MAX_FOLLOW_REQUESTS, o que fica cortado é a
+// MENSAGEM de pedido, não a reconsulta: `resolverFollow` consulta a Meta ANTES
+// de olhar `follow_attempts`, então toda passagem pelo portão pergunta de novo.
 //
-// Ou seja: o limite protege contra virar spam, mas ele É armadilha permanente
-// para quem nunca segue. Sair disso hoje exige mexer no banco. Um reset por
-// balde de dia (como as chaves de deduplicação já fazem) resolveria, e não foi
-// feito aqui: mudaria o comportamento do limite, e esta branch trocou o motor.
+// A saída, portanto, existe e não precisa de banco: seguir o perfil e mandar
+// QUALQUER mensagem de texto. Quem está parado num `pedir_follow` captura
+// qualquer texto (a condição de interrupção do ramo do cursor só olha passo
+// `dm`), e o ramo retoma DO PRÓPRIO portão — o que chama `resolverFollow`,
+// zera o contador e segue o fluxo. O botão é conveniência, não a única porta.
+//
+// O que sobra de armadilha, e não é pouco: passado o limite, a pessoa deixa de
+// receber qualquer aviso do que falta fazer — o fluxo trava em silêncio, e ela
+// só sai se tentar por conta própria. E o contador é por CONTATO, não por
+// automação nem por dia (`follow_attempts` é coluna de `contacts`): quem
+// esgotou as tentativas no portão da automação A também não recebe o pedido da
+// B, hoje nem amanhã. Um reset por balde de dia (como as chaves de deduplicação
+// já fazem) resolveria, e não foi feito aqui: mudaria o comportamento do limite,
+// e esta branch já trocou o motor.
 //
 // A condição no fim evita escrever à toa em quem já está zerado, que é o caso
 // comum: todo passo de follow vencido passaria por aqui.
@@ -827,13 +884,37 @@ export async function handleMessagingEvent(entryId: string | undefined, ev: Mess
       // O passo de follow é reavaliado, então retoma DELE, não do seguinte.
       //
       // Mesma exigência do ramo acima: o índice só serve se for desta
-      // automação. Sendo de outra, começa do zero — a lista desta é percorrida
-      // desde o início e o portão dela é reavaliado no lugar certo, em vez de
-      // um índice emprestado apontar para um passo que não é portão nenhum.
+      // automação. Sem cursor próprio, porém, o ponto de partida NÃO é o zero,
+      // e é aqui que este ramo difere do `AUTO:` de cima: o payload
+      // `FOLLOW:<id>` só existe porque o portão desta automação foi entregue,
+      // então o toque AFIRMA onde a pessoa está. Retoma do portão DESTA lista.
+      //
+      // O zero era no-op para toda lista que o formulário grava, e a razão é
+      // estrutural: a boas-vindas é obrigatória, vem sempre antes do portão e
+      // sempre com rótulo e sem url — ou seja, parada dura. `interpretar` a
+      // partir do zero parava NELA e nunca chegava ao portão. Pior, gravava o
+      // cursor na boas-vindas, e o toque seguinte encontrava esse cursor (agora
+      // desta automação) e parava no mesmo lugar: o botão "Já sigo!" nunca mais
+      // funcionava.
+      //
+      // Por que retomar do portão é seguro:
+      //   o portão não é pulado — `resolverFollow` reconsulta a Meta ali, e
+      //     quem não segue continua barrado exatamente como antes;
+      //   se o fluxo já tinha TERMINADO (cursor limpo), retomar do portão
+      //     reentrega o que vem depois dele. É recuperável pelo mesmo argumento
+      //     que o ramo `AUTO:` usa para escolher o zero — a deduplicação por
+      //     `passoKey` segura o dia — e é a resposta sã a quem acabou de tocar
+      //     em "Já sigo!": hoje essa pessoa não recebe nada;
+      //   o `?? 0` final só é alcançado por lista SEM portão nenhum, montada à
+      //     mão (o formulário não produz `FOLLOW:` sem `pedir_follow`), e aí o
+      //     zero é mesmo o único ponto afirmável.
       const auto = await loadAutomation(account.ig_user_id, payload.slice(7));
       if (auto) {
-        const indice = cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id);
-        await executarFluxo(account, auto, senderId, indice ?? 0);
+        const indice =
+          cursorDesta(await lerCursor(account.ig_user_id, senderId), auto.id) ??
+          indiceDoPortao(auto.steps) ??
+          0;
+        await executarFluxo(account, auto, senderId, indice);
       }
     }
     return;
