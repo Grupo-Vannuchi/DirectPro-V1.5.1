@@ -3,12 +3,76 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { sql, ensureSchema } from "@/lib/db";
 import { getSelectedAccountId } from "@/lib/account";
+import type { Passo } from "@/lib/steps";
 
 function splitList(raw: string, sep: RegExp): string[] {
   return raw
     .split(sep)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+// Monta a lista de passos a partir dos campos do formulário.
+//
+// A ordem aqui é EXATAMENTE a que o engine executava codificada — é isso que
+// faz a Tarefa 4 não mudar comportamento nenhum. Quando o editor de blocos
+// chegar (Fase 1b), esta função sai: a lista virá pronta da tela.
+function montarPassos(f: {
+  triggers: string[];
+  publicReplies: string[];
+  welcomeText: string;
+  quickReplyLabel: string;
+  storyReaction: string;
+  requireFollow: boolean;
+  followText: string;
+  followButtonLabel: string;
+  askEmail: boolean;
+  emailText: string;
+  followups: { kind: string; text: string; button_label: string | null; url: string | null; delay_minutes: number }[];
+}): Passo[] {
+  const passos: Passo[] = [];
+
+  // Reação ao story vem antes de tudo: é o coraçãozinho instantâneo.
+  if (f.triggers.includes("story") && f.storyReaction) {
+    passos.push({ tipo: "reagir_story", emoji: f.storyReaction });
+  }
+  if (f.triggers.includes("comment") && f.publicReplies.length) {
+    passos.push({ tipo: "resposta_publica", textos: f.publicReplies });
+  }
+  if (f.welcomeText.trim()) {
+    passos.push({
+      tipo: "dm",
+      texto: f.welcomeText,
+      botao_label: f.quickReplyLabel || undefined,
+    });
+  }
+  if (f.requireFollow) {
+    passos.push({
+      tipo: "pedir_follow",
+      texto: f.followText || "Antes de te mandar o link, me segue lá no perfil 🙏",
+      botao_label: f.followButtonLabel || "Já sigo! ✅",
+    });
+  }
+  if (f.askEmail) {
+    passos.push({
+      tipo: "pedir_email",
+      texto: f.emailText || "Me manda seu melhor e-mail que eu te envio o link 👇",
+    });
+  }
+  // O atraso do followup deixa de ser propriedade dele e vira passo próprio.
+  for (const fu of f.followups) {
+    if (fu.delay_minutes > 0) passos.push({ tipo: "esperar", minutos: fu.delay_minutes });
+    if (fu.text.trim()) {
+      passos.push({
+        tipo: "dm",
+        texto: fu.text,
+        botao_label: fu.button_label || undefined,
+        url: fu.url || undefined,
+      });
+    }
+  }
+
+  return passos;
 }
 
 export async function saveAutomation(formData: FormData): Promise<void> {
@@ -96,6 +160,37 @@ export async function saveAutomation(formData: FormData): Promise<void> {
   ];
 
   let automationId = id;
+
+  // A mesma sequência de follow-ups gravada na tabela `followups` logo abaixo,
+  // mas na forma que montarPassos entende — é o que essa função consome para
+  // virar `esperar` + `dm` na lista de passos.
+  const followups: { kind: string; text: string; button_label: string | null; url: string | null; delay_minutes: number }[] = [
+    { kind: "link", text: linkText || "Aqui está o seu link! 👇", button_label: linkButtonLabel, url: linkUrl, delay_minutes: 0 },
+  ];
+  if (reminderText) {
+    followups.push({
+      kind: "reminder",
+      text: reminderText,
+      button_label: linkButtonLabel,
+      url: linkUrl,
+      delay_minutes: reminderDelay,
+    });
+  }
+
+  const passos = montarPassos({
+    triggers,
+    publicReplies,
+    welcomeText,
+    quickReplyLabel,
+    storyReaction,
+    requireFollow,
+    followText,
+    followButtonLabel,
+    askEmail,
+    emailText,
+    followups,
+  });
+
   if (id) {
     // o account_id no where impede editar automação de outra conta
     await sql().query(
@@ -107,9 +202,10 @@ export async function saveAutomation(formData: FormData): Promise<void> {
          link_text = $14, link_button_label = $15, link_url = $16,
          reminder_text = $17, reminder_delay_minutes = $18,
          require_follow = $19, follow_text = $20, follow_button_label = $21,
-         ask_email = $22, email_text = $23, story_reaction = $24, updated_at = now()
-       where id = $25 and account_id = $26`,
-      [...params, id, accountId]
+         ask_email = $22, email_text = $23, story_reaction = $24,
+         steps = $25, updated_at = now()
+       where id = $26 and account_id = $27`,
+      [...params, passos, id, accountId]
     );
   } else {
     const rows = (await sql().query(
@@ -118,11 +214,11 @@ export async function saveAutomation(formData: FormData): Promise<void> {
           media_caption, story_id, story_thumbnail_url, public_replies, welcome_text,
           quick_reply_label, link_text, link_button_label, link_url, reminder_text,
           reminder_delay_minutes, require_follow, follow_text, follow_button_label,
-          ask_email, email_text, story_reaction)
+          ask_email, email_text, story_reaction, steps)
        values ($25,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-               $19,$20,$21,$22,$23,$24)
+               $19,$20,$21,$22,$23,$24,$26)
        returning id`,
-      [...params, accountId]
+      [...params, accountId, passos]
     )) as { id: string }[];
     automationId = rows[0].id;
   }
