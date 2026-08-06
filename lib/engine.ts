@@ -45,6 +45,7 @@ import {
   emailAnswerKey,
   storyReactionKey,
   manualReplyKey,
+  diaDaChave,
 } from "./dedupe";
 
 // ============================================================
@@ -295,9 +296,11 @@ async function fetchProfileFields(
   }
 }
 
-// dia atual em UTC — 1 sequência de follow-up por pessoa/automação/dia
+// 1 sequência por pessoa/automação/dia. Qual dia é "hoje" mora em
+// `diaDaChave` (lib/dedupe.ts), junto das chaves que o consomem e com teste —
+// aqui fica só a leitura do relógio, que é o que não dá para testar.
 function dayBucket(): string {
-  return new Date().toISOString().slice(0, 10);
+  return diaDaChave(new Date());
 }
 
 async function loadAutomation(

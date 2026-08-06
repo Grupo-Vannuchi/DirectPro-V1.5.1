@@ -9,6 +9,7 @@ import {
   welcomeMessageKey,
   storyReactionKey,
   passoKey,
+  diaDaChave,
 } from "@/lib/dedupe";
 
 // A coluna dedupe_key é UNIQUE e o enqueue usa `on conflict do nothing`. Esse
@@ -122,6 +123,40 @@ describe("chaves vindas de mensagem recebida", () => {
 
   it("reação a story usa o id da mensagem", () => {
     expect(storyReactionKey("mid-42")).toBe("rx:mid-42");
+  });
+});
+
+describe("o dia da chave é o dia de Brasília, não o de UTC", () => {
+  // Estes três são a correção inteira. Antes, o dia virava às 21h locais, e
+  // quem acionasse às 20h e às 22h da mesma noite recebia a sequência duas
+  // vezes. Os instantes estão em UTC (o `Z`) de propósito: é assim que o
+  // servidor da Vercel enxerga o relógio, e é dali que a conversão parte.
+  it("às 20h de Brasília ainda é o mesmo dia", () => {
+    // 2026-08-06 23:00Z = 2026-08-06 20:00 em São Paulo
+    expect(diaDaChave(new Date("2026-08-06T23:00:00Z"))).toBe("2026-08-06");
+  });
+
+  it("às 22h de Brasília CONTINUA sendo o mesmo dia — era aqui que virava", () => {
+    // 2026-08-07 01:00Z = 2026-08-06 22:00 em São Paulo.
+    // Em UTC isto dava "2026-08-07": balde novo, mensagem repetida.
+    expect(diaDaChave(new Date("2026-08-07T01:00:00Z"))).toBe("2026-08-06");
+    expect(diaDaChave(new Date("2026-08-07T01:00:00Z"))).not.toBe("2026-08-07");
+  });
+
+  it("à meia-noite de Brasília o dia vira", () => {
+    // 2026-08-07 02:59Z = 2026-08-06 23:59 | 03:00Z = 2026-08-07 00:00
+    expect(diaDaChave(new Date("2026-08-07T02:59:00Z"))).toBe("2026-08-06");
+    expect(diaDaChave(new Date("2026-08-07T03:00:00Z"))).toBe("2026-08-07");
+  });
+
+  it("o formato continua YYYY-MM-DD, senão as chaves já gravadas não casam", () => {
+    expect(diaDaChave(new Date("2026-01-09T15:00:00Z"))).toBe("2026-01-09");
+  });
+
+  it("dois instantes do mesmo dia local dão a MESMA chave", () => {
+    const manha = passoKey("a", "c", 0, diaDaChave(new Date("2026-08-06T13:00:00Z")));
+    const noite = passoKey("a", "c", 0, diaDaChave(new Date("2026-08-07T01:00:00Z")));
+    expect(noite).toBe(manha);
   });
 });
 

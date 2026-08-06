@@ -36,6 +36,34 @@
 export const privateReplyKey = (commentId: string) => `pr:${commentId}`;
 export const commentReplyKey = (commentId: string) => `cr:${commentId}`;
 
+// Que dia é "hoje" para efeito de deduplicação, em BRASÍLIA.
+//
+// O fuso não é detalhe de exibição aqui: este valor entra na `dedupe_key`, ou
+// seja, é ele que decide quando a mesma automação pode entregar de novo.
+//
+// Era `new Date().toISOString().slice(0, 10)`, que é UTC, e isso fazia o dia
+// virar às 21h de Brasília. Quem acionasse a automação às 20h e de novo às 22h
+// da mesma noite caía em dois baldes diferentes e recebia a sequência DUAS
+// VEZES — todo dia, entre 21h e meia-noite, que é justamente o horário de pico
+// no Instagram. O resto do sistema já assumia Brasília (lib/format.ts na
+// exibição, o `at time zone` do gráfico em app/page.tsx); só este ponto, o
+// único em que o fuso muda comportamento e não aparência, estava em UTC.
+//
+// Recebe o instante em vez de ler o relógio para poder ser testada — é a
+// mesma razão de tudo neste arquivo ser função pura.
+//
+// `en-CA` porque é o locale que formata como `YYYY-MM-DD`, que é o formato que
+// as chaves já usavam. Trocar o formato reabriria envio em dobro em tudo que
+// já está enfileirado.
+export function diaDaChave(agora: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(agora);
+}
+
 // Estes três repetem por pessoa e por dia: o `dia` é o balde que permite a
 // mesma automação rodar de novo amanhã sem liberar duas vezes hoje.
 export const followGateKey = (

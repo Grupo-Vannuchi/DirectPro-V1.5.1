@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
 import { getSelectedAccount } from "@/lib/account";
 import { isValidSession, SESSION_COOKIE } from "@/lib/auth";
+import { diaDaChave } from "@/lib/dedupe";
 
 // Exporta os contatos da conta selecionada. Separador ";" e BOM de UTF-8
 // porque é assim que o Excel em português abre o arquivo com acento certo,
@@ -39,7 +40,8 @@ export async function GET(req: NextRequest) {
   ];
 
   const csv = "﻿" + linhas.map((l) => l.map(cell).join(SEP)).join("\r\n");
-  const hoje = new Date().toISOString().slice(0, 10);
+  // Brasília, não UTC: exportar às 22h nomeava o arquivo com a data de amanhã.
+  const hoje = diaDaChave(new Date());
   const nome = `emails-${account.username ?? account.ig_user_id}-${hoje}.csv`;
 
   return new NextResponse(csv, {
